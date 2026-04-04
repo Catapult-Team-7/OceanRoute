@@ -576,7 +576,7 @@ def build_real_training_dataset(
     merged["wind_speed"] = merged.get("era5_wind_speed", pd.Series(index=merged.index, dtype=float))
     if merged["wind_speed"].notna().sum() == 0:
         raise RealDataLoadError(
-            "ERA5 wind enrichment is required for real flux targets. Put real ERA5 CSVs in Training_Data/ERA or set ERA5_LOCAL_PATH."
+            "ERA5 wind enrichment is required for real flux targets. Put real ERA5 CSVs in ~/OceanPulseData/ERA or set ERA5_LOCAL_PATH."
         )
     merged["current_u"] = merged.get("copernicus_u", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
     merged["current_v"] = merged.get("copernicus_v", pd.Series(index=merged.index, dtype=float)).fillna(0.0)

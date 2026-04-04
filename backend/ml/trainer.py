@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("oceanpulse.ml")
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
+DEFAULT_EXTERNAL_ERA5_PATH = "~/OceanPulseData/ERA"
 RECOMMENDED_COPERNICUS_CURRENTS_DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_SALINITY_DATASET = "cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET = "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m"
@@ -118,7 +119,7 @@ REAL_DATA_APIS = [
         "fields": ["10m wind", "surface pressure", "wave-relevant forcing"],
         "url": "https://cds.climate.copernicus.eu",
         "env_var": "ERA5_API_URL",
-        "notes": "Training_Data/ERA",
+        "notes": DEFAULT_EXTERNAL_ERA5_PATH,
     },
     {
         "id": "socat",

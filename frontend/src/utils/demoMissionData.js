@@ -114,7 +114,7 @@ export const HACKATHON_API_DEFAULTS = [
     fields: ["10m wind", "surface pressure", "wave-relevant forcing"],
     url: "https://cds.climate.copernicus.eu",
     env_var: "ERA5_API_URL",
-    notes: "Training_Data/ERA",
+    notes: "~/OceanPulseData/ERA",
   },
   {
     id: "socat",

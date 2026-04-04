@@ -206,7 +206,7 @@ export default function MLLab() {
             status: api.id === "copernicus_marine" ? "testing" : "connected",
             notes:
               api.id === "era5"
-                ? "Training_Data/ERA"
+                ? "~/OceanPulseData/ERA"
                 : api.id === "copernicus_marine"
                   ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
                     "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
@@ -232,7 +232,7 @@ export default function MLLab() {
           status: api.id === "copernicus_marine" ? "testing" : "connected",
           notes:
             api.id === "era5"
-              ? "Training_Data/ERA"
+              ? "~/OceanPulseData/ERA"
               : api.id === "copernicus_marine"
                 ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
                   "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +

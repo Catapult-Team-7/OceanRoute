@@ -101,8 +101,10 @@ def _prepare_target_frame(
     cop = cop.groupby(["year", "month", "lat_bin", "lon_bin"], as_index=False).mean(numeric_only=True)
     merged = merged.merge(cop, on=["year", "month", "lat_bin", "lon_bin"], how="left")
 
+    merged["sst"] = merged.get("sst", pd.Series(index=merged.index, dtype=float))
     merged["sst"] = merged["sst"].fillna(merged.get("copernicus_thetao", pd.Series(index=merged.index, dtype=float)))
     merged["sst"] = merged["sst"].fillna(merged.get("era5_sst_c", pd.Series(index=merged.index, dtype=float)))
+    merged["salinity"] = merged.get("salinity", pd.Series(index=merged.index, dtype=float))
     merged["salinity"] = merged["salinity"].fillna(
         merged.get("copernicus_salinity", pd.Series(index=merged.index, dtype=float))
     )

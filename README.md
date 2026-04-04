@@ -17,7 +17,7 @@ npm run dev
 
 This launches:
 
-- Backend at `http://127.0.0.1:8000`
+- Backend at `http://127.0.0.1:8765`
 - Frontend at `http://127.0.0.1:5173`
 - Combined logs at `logs/oceanpulse-dev.log`
 
@@ -35,6 +35,43 @@ cd ..
 ```
 
 Use Python 3.11 for local backend setup. Python 3.13 may fail on heavier scientific packages because some wheels are not available yet.
+
+## ERA5 API download
+
+The real training pipeline expects local ERA5 CSVs outside the repo by default:
+
+- `~/OceanPulseData/ERA`
+
+Set up the official CDS API token first by creating `~/.cdsapirc`:
+
+```yaml
+url: https://cds.climate.copernicus.eu/api
+key: <PERSONAL-ACCESS-TOKEN>
+```
+
+You also need to accept the ERA5 dataset Terms of Use once on the CDS dataset page before the API will download data.
+
+Then run:
+
+```bash
+cd backend
+source .venv/bin/activate
+python ingest/fetch_era5.py
+```
+
+That command downloads a normalized CSV into `~/OceanPulseData/ERA` with the columns the trainer expects:
+
+- `valid_time`
+- `u10`
+- `v10`
+- optional `sst`
+- optional `msl`
+
+You can override the location and date range if needed:
+
+```bash
+python ingest/fetch_era5.py --latitude 27.5 --longitude -140 --start-date 2024-01-01 --end-date 2025-12-31
+```
 
 ## Error logging
 

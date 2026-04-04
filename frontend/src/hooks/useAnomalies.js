@@ -27,8 +27,10 @@ export function useAnomalies() {
       }
     }
     load();
+    const pollTimer = window.setInterval(load, 20000);
     return () => {
       cancelled = true;
+      window.clearInterval(pollTimer);
       controller.abort();
     };
   }, [selectedDate, setAnomalies]);

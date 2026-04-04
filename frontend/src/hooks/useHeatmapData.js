@@ -14,8 +14,8 @@ export function useHeatmapData() {
     let cancelled = false;
     const controller = new AbortController();
 
-    async function load() {
-      setLoading(true);
+    async function load(showSpinner = true) {
+      if (showSpinner) setLoading(true);
       try {
         const params = new URLSearchParams({
           date: selectedDate,
@@ -33,13 +33,17 @@ export function useHeatmapData() {
           setHeatmapData(null);
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && showSpinner) setLoading(false);
       }
     }
 
     load();
+    const pollTimer = window.setInterval(() => {
+      load(false);
+    }, 20000);
     return () => {
       cancelled = true;
+      window.clearInterval(pollTimer);
       controller.abort();
     };
   }, [selectedDate, selectedRegion, setHeatmapData, setLoading]);

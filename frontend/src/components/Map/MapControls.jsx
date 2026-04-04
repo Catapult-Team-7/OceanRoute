@@ -1,10 +1,16 @@
 import { useOceanStore } from "../../store/oceanStore";
 
 const REGIONS = ["global", "pacific", "atlantic", "indian"];
+const BASEMAPS = [
+  { id: "satellite", label: "Satellite" },
+  { id: "ocean", label: "Ocean" },
+];
 
 export default function MapControls() {
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
+  const basemapStyle = useOceanStore((state) => state.basemapStyle);
   const setSelectedRegion = useOceanStore((state) => state.setSelectedRegion);
+  const setBasemapStyle = useOceanStore((state) => state.setBasemapStyle);
 
   return (
     <div className="map-controls">
@@ -17,6 +23,17 @@ export default function MapControls() {
           onClick={() => setSelectedRegion(region)}
         >
           {region}
+        </button>
+      ))}
+      <div className="map-controls-title">Basemap</div>
+      {BASEMAPS.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className={basemapStyle === item.id ? "active" : ""}
+          onClick={() => setBasemapStyle(item.id)}
+        >
+          {item.label}
         </button>
       ))}
     </div>

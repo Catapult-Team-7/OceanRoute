@@ -9,6 +9,7 @@ export const useOceanStore = create((set) => ({
   selectedDate: monthString(new Date()),
   selectedPoint: null,
   selectedRegion: "global",
+  basemapStyle: "satellite",
   heatmapData: null,
   anomalies: [],
   forecast: null,
@@ -20,6 +21,7 @@ export const useOceanStore = create((set) => ({
   setSelectedDate: (selectedDate) => set({ selectedDate }),
   setSelectedPoint: (selectedPoint) => set({ selectedPoint }),
   setSelectedRegion: (selectedRegion) => set({ selectedRegion }),
+  setBasemapStyle: (basemapStyle) => set({ basemapStyle }),
   setHeatmapData: (heatmapData) =>
     set({
       heatmapData,

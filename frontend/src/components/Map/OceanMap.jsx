@@ -6,54 +6,10 @@ import DeckGL from "@deck.gl/react";
 import { useHeatmapData } from "../../hooks/useHeatmapData";
 import { useOceanStore } from "../../store/oceanStore";
 import { fluxToColor } from "../../utils/colorScale";
+import { buildRecoveryTargets, buildTopMissionTargets } from "../../utils/missionInsights";
 
 const MapLibreSurface = lazy(() => import("./MapLibreSurface"));
 const INITIAL_VIEW_STATE = { longitude: 0, latitude: 12, zoom: 1.15, pitch: 0, bearing: 0 };
-
-const BASE_PLASTIC_HOTSPOTS = [
-  {
-    id: "north-pacific-garbage-patch",
-    label: "North Pacific Patch",
-    lat: 33.2,
-    lon: -145.4,
-    density: 0.94,
-    tonnage: "79K tons",
-    routeTarget: { lat: 37.77, lon: -122.42, port: "San Francisco" },
-  },
-  {
-    id: "indian-ocean-gyre",
-    label: "Indian Ocean Gyre",
-    lat: -18.4,
-    lon: 82.1,
-    density: 0.72,
-    tonnage: "31K tons",
-    routeTarget: { lat: 1.29, lon: 103.85, port: "Singapore" },
-  },
-  {
-    id: "south-atlantic-drift",
-    label: "South Atlantic Drift",
-    lat: -27.6,
-    lon: -14.8,
-    density: 0.66,
-    tonnage: "18K tons",
-    routeTarget: { lat: -33.92, lon: 18.42, port: "Cape Town" },
-  },
-];
-
-function nearestInsight(points, lat, lon) {
-  if (!points.length) return null;
-  let best = points[0];
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const point of points) {
-    const [pointLon, pointLat] = point.geometry.coordinates;
-    const distance = Math.hypot((pointLat - lat) / 10, (pointLon - lon) / 14);
-    if (distance < bestDistance) {
-      best = point;
-      bestDistance = distance;
-    }
-  }
-  return best?.properties || null;
-}
 
 export default function OceanMap() {
   useHeatmapData();
@@ -61,6 +17,7 @@ export default function OceanMap() {
   const heatmapData = useOceanStore((state) => state.heatmapData);
   const anomalies = useOceanStore((state) => state.anomalies);
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
+  const basemapStyle = useOceanStore((state) => state.basemapStyle);
   const setSelectedPoint = useOceanStore((state) => state.setSelectedPoint);
   const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
   const [showBrief, setShowBrief] = useState(true);
@@ -68,30 +25,20 @@ export default function OceanMap() {
   const sourceSummary = heatmapData?.metadata?.source_summary || "";
 
   const points = heatmapData?.features || [];
-  const plasticHotspots = useMemo(() => {
-    const regionMatchers = {
-      global: () => true,
-      pacific: (item) => item.lon >= 110 || item.lon <= -70,
-      atlantic: (item) => item.lon >= -80 && item.lon <= 20,
-      indian: (item) => item.lon >= 20 && item.lon <= 120,
-    };
-    const matcher = regionMatchers[selectedRegion] || regionMatchers.global;
-    return BASE_PLASTIC_HOTSPOTS.filter(matcher).map((item) => {
-      const insight = nearestInsight(points, item.lat, item.lon);
-      const weakening = insight?.weakening_score || 0;
-      const routePriority = insight?.route_priority || 0;
-      return {
-        ...item,
-        weakening,
-        routePriority,
-        density: Math.min(1.3, item.density + routePriority * 0.06),
-      };
-    });
-  }, [points, selectedRegion]);
+  const recoveryTargets = useMemo(
+    () => buildRecoveryTargets(points, viewState.zoom, verifiedMap),
+    [points, verifiedMap, viewState.zoom]
+  );
+  const prioritySummary = useMemo(
+    () => buildTopMissionTargets(points, anomalies, viewState.zoom, verifiedMap),
+    [anomalies, points, verifiedMap, viewState.zoom]
+  );
 
   const routeSegments = useMemo(
     () =>
-      plasticHotspots.map((item) => ({
+      recoveryTargets
+        .filter((item) => item.routeTarget)
+        .map((item) => ({
         id: `${item.id}-route`,
         path: [
           [item.lon, item.lat],
@@ -99,11 +46,11 @@ export default function OceanMap() {
         ],
         source: [item.lon, item.lat],
         target: [item.routeTarget.lon, item.routeTarget.lat],
-        density: item.routePriority || item.density,
-        label: `${item.label} to ${item.routeTarget.port}`,
+        density: item.routePriority,
+        label: `${item.label} to ${item.routeTarget.name}`,
         weakening: item.weakening,
       })),
-    [plasticHotspots]
+    [recoveryTargets]
   );
 
   const sinkNodes = useMemo(
@@ -126,19 +73,19 @@ export default function OceanMap() {
 
   const routeLabels = useMemo(
     () =>
-      plasticHotspots.map((item) => ({
+      recoveryTargets.slice(0, viewState.zoom > 2.2 ? 10 : 5).map((item) => ({
         id: `${item.id}-label`,
         position: [item.lon, item.lat],
         label: item.label,
       })),
-    [plasticHotspots]
+    [recoveryTargets, viewState.zoom]
   );
 
   const tooltipText = ({ object }) => {
     if (!object) return null;
-    if (object.routeTarget?.port) {
+    if (object.routeTarget?.name) {
       return {
-        text: `${object.label}\nPlastic load: ${object.tonnage}\nWeakening score: ${object.weakening.toFixed(2)}\nRecommended port: ${object.routeTarget.port}`,
+        text: `${object.label}\nClustered recovery cells: ${object.clusterSize}\nRoute priority: ${object.routePriority.toFixed(2)}\nNearest port: ${object.routeTarget.name}`,
       };
     }
     if (object.source && object.target) {
@@ -220,18 +167,18 @@ export default function OceanMap() {
         pickable: true,
       }),
       new ScatterplotLayer({
-        id: "plastic-hotspots",
-        data: plasticHotspots,
+        id: "recovery-targets",
+        data: recoveryTargets,
         getPosition: (d) => [d.lon, d.lat],
-        getRadius: (d) => 90000 + d.density * 110000,
-        getFillColor: (d) => [255, 196, 61, 34 + Math.round(d.density * 52)],
+        getRadius: (d) => 60000 + d.clusterSize * 15000 + d.routePriority * 40000,
+        getFillColor: (d) => [255, 196, 61, 42 + Math.round(Math.min(d.routePriority, 1.4) * 72)],
         getLineColor: [255, 230, 160, 180],
         lineWidthMinPixels: 3,
         stroked: true,
         pickable: true,
       }),
       new TextLayer({
-        id: "plastic-hotspot-labels",
+        id: "recovery-target-labels",
         data: routeLabels,
         getPosition: (d) => d.position,
         getText: (d) => d.label,
@@ -245,7 +192,7 @@ export default function OceanMap() {
       }),
     ]
         : [],
-    [anomalies, displayPoints, plasticHotspots, routeLabels, routeSegments, sinkNodes, verifiedMap, viewState.zoom, weakeningZones]
+    [anomalies, displayPoints, recoveryTargets, routeLabels, routeSegments, sinkNodes, verifiedMap, viewState.zoom, weakeningZones]
   );
 
   return (
@@ -254,7 +201,15 @@ export default function OceanMap() {
         <div className="map-brief">
           <div>
             <span className="map-brief-label">Mission Map</span>
-            <strong>Carbon sinks, weakening zones, and recovery corridors</strong>
+            <strong>CO2 weakening, recovery targets, and port corridors on a satellite basemap</strong>
+            {verifiedMap && prioritySummary.degradationTarget ? (
+              <small className="map-brief-subcopy">
+                Top weakening cell: {prioritySummary.degradationTarget.properties.weakening_score.toFixed(2)} · Top route
+                target: {prioritySummary.topRecoveryTarget?.routeTarget?.name || "awaiting routing target"}
+              </small>
+            ) : (
+              <small className="map-brief-subcopy">Checkpoint-backed map refreshes automatically while training and ingestion progress.</small>
+            )}
           </div>
           <div className="map-brief-actions">
             <span className="map-brief-meta">{selectedRegion} view</span>
@@ -283,7 +238,7 @@ export default function OceanMap() {
         getTooltip={tooltipText}
       >
         <Suspense fallback={null}>
-          <MapLibreSurface />
+          <MapLibreSurface basemapStyle={basemapStyle} />
         </Suspense>
       </DeckGL>
       {!verifiedMap ? (

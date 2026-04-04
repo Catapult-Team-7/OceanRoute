@@ -215,6 +215,13 @@ input {
   line-height: 1.25;
 }
 
+.map-brief-subcopy {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
 .map-brief-label,
 .map-brief-meta {
   color: var(--text-muted);
