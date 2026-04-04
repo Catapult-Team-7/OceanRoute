@@ -202,6 +202,12 @@ input {
   backdrop-filter: blur(12px);
 }
 
+.map-brief-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
 .map-brief strong {
   display: block;
   margin-top: 4px;
@@ -219,6 +225,52 @@ input {
 
 .map-brief-meta {
   white-space: nowrap;
+}
+
+.map-brief-close,
+.map-brief-restore {
+  border: 0;
+  cursor: pointer;
+  color: #dfeaf5;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+}
+
+.map-brief-close {
+  padding: 6px 10px;
+}
+
+.map-brief-restore {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 2;
+  padding: 8px 12px;
+  backdrop-filter: blur(12px);
+}
+
+.map-empty-state {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  z-index: 2;
+  width: min(620px, calc(100% - 36px));
+  padding: 14px 16px;
+  transform: translateX(-50%);
+  background: rgba(3, 16, 30, 0.78);
+  border: 1px solid rgba(146, 184, 224, 0.16);
+  border-radius: 18px;
+  backdrop-filter: blur(12px);
+}
+
+.map-empty-state strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.map-empty-state span {
+  color: var(--text-muted);
+  line-height: 1.45;
 }
 
 .map-toolbar {

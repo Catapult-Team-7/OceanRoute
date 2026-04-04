@@ -5,8 +5,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
+from ingest.fetch_copernicus import (
+    CopernicusSyncError,
+    default_copernicus_directory,
+    parse_copernicus_notes,
+    resolve_copernicus_credentials,
+    sync_copernicus_defaults,
+)
 from ingest.real_training_data import (
     DEFAULT_NOAA_GML_CO2_URL,
+    DEFAULT_SOCAT_ERDDAP_URL,
     RealDataLoadError,
     default_era5_directory,
     load_era5_monthly,
@@ -49,6 +57,35 @@ class DataConnectorService:
             )
         return {"status": "error", "message": f"Unknown connector: {connector_id}"}
 
+    def sync(self, connector_id: str):
+        if connector_id != "copernicus_marine":
+            return {
+                "connector_id": connector_id,
+                "status": "error",
+                "message": f"Sync is not implemented for {connector_id}.",
+            }
+        config = self._config_for("copernicus_marine")
+        note_settings = parse_copernicus_notes(config.get("notes", ""))
+        try:
+            result = sync_copernicus_defaults(overrides=note_settings)
+        except CopernicusSyncError as exc:
+            return {
+                "connector_id": "copernicus_marine",
+                "connector_name": config["name"],
+                "status": "error",
+                "message": str(exc),
+                "config": config,
+            }
+        return {
+            "connector_id": "copernicus_marine",
+            "connector_name": config["name"],
+            "status": "ready",
+            "message": "Copernicus current and salinity subsets were downloaded to the configured local directory.",
+            "downloads": result["downloads"],
+            "output_directory": result["output_directory"],
+            "config": config,
+        }
+
     def _config_for(self, connector_id: str):
         for item in self.trainer.list_required_apis():
             if item.get("id") == connector_id:
@@ -67,14 +104,32 @@ class DataConnectorService:
 
     def _preview_copernicus(self):
         config = self._config_for("copernicus_marine")
+        note_settings = parse_copernicus_notes(config.get("notes", ""))
         example = {
-            "dataset_id": "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
-            "variables": ["so", "thetao"],
+            "dataset_id_envs": [
+                "COPERNICUS_MONTHLY_PHYSICS_DATASET_ID",
+                "COPERNICUS_ROUTING_DATASET_ID",
+                "COPERNICUS_CURRENTS_DATASET_ID",
+                "COPERNICUS_SALINITY_DATASET_ID",
+                "COPERNICUS_TEMPERATURE_DATASET_ID",
+                "COPERNICUS_SEA_LEVEL_DATASET_ID",
+            ],
+            "variables": {
+                "monthly_training": ["uo", "vo", "so", "thetao"],
+                "routing": ["uo", "vo", "zos"],
+            },
             "min_longitude": -160,
             "max_longitude": -120,
             "min_latitude": 15,
             "max_latitude": 40,
+            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;path=Training_Data/Copernicus",
         }
+        output_directory = Path(
+            note_settings.get("path", "").strip()
+            or os.getenv("COPERNICUS_OUTPUT_DIR", "").strip()
+            or default_copernicus_directory()
+        )
+        nc_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
         try:
             import copernicusmarine
         except ImportError:
@@ -84,17 +139,42 @@ class DataConnectorService:
                 "status": "missing_dependency",
                 "message": "Install `copernicusmarine` from requirements-ml-ingest.txt to run live Copernicus previews.",
                 "request_template": example,
+                "local_output_directory": str(output_directory),
+                "local_netcdf_files": [str(path) for path in nc_files[:10]],
                 "config": config,
             }
+
+        credentials_detected = False
+        try:
+            resolve_copernicus_credentials()
+            credentials_detected = True
+        except CopernicusSyncError:
+            credentials_detected = False
 
         return {
             "connector_id": "copernicus_marine",
             "connector_name": config["name"],
             "status": "ready",
-            "message": "Copernicus Marine connector is configured for Toolbox-based downloads. Use the example request below in the next ingest step.",
+            "message": "Copernicus Marine connector is ready for Toolbox-based downloads and local NetCDF enrichment.",
             "toolbox_version": getattr(copernicusmarine, "__version__", "unknown"),
-            "credentials_detected": bool(os.getenv("COPERNICUS_USERNAME") and os.getenv("COPERNICUS_PASSWORD")),
+            "credentials_detected": credentials_detected,
             "request_template": example,
+            "local_output_directory": str(output_directory),
+            "local_netcdf_files": [str(path) for path in nc_files[:10]],
+            "dataset_id_hints": {
+                "monthly_training": note_settings.get("monthly_physics_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_MONTHLY_PHYSICS_DATASET_ID", "").strip(),
+                "routing": note_settings.get("routing_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_ROUTING_DATASET_ID", "").strip(),
+                "currents": note_settings.get("currents_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_CURRENTS_DATASET_ID", "").strip(),
+                "salinity": note_settings.get("salinity_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_SALINITY_DATASET_ID", "").strip(),
+                "temperature": note_settings.get("temperature_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_TEMPERATURE_DATASET_ID", "").strip(),
+                "sea_level": note_settings.get("sea_level_dataset_id", "").strip()
+                or os.getenv("COPERNICUS_SEA_LEVEL_DATASET_ID", "").strip(),
+            },
             "config": config,
         }
 
@@ -207,13 +287,21 @@ class DataConnectorService:
     def _preview_socat(self):
         config = self._config_for("socat")
         data_url = config.get("url", "").strip()
-        if not data_url.endswith((".zip", ".tsv", ".csv", ".txt")):
+        if "/erddap/tabledap/" in data_url:
+            query_hint = (
+                "Use the SOCAT ERDDAP tabledap endpoint. If you provide only the dataset root, "
+                "OceanPulse will auto-build a lightweight decimated query."
+            )
+        else:
+            query_hint = None
+        if not data_url.endswith((".zip", ".tsv", ".csv", ".txt")) and "/erddap/tabledap/" not in data_url:
             return {
                 "connector_id": "socat",
                 "connector_name": config["name"],
                 "status": "needs_config",
-                "message": "Set a direct SOCAT release URL ending in .zip, .tsv, .txt, or .csv before previewing.",
+                "message": "Set a SOCAT ERDDAP tabledap URL or a direct SOCAT release URL ending in .zip, .tsv, .txt, or .csv before previewing.",
                 "config": config,
+                "example_url": DEFAULT_SOCAT_ERDDAP_URL,
             }
         try:
             frame = load_socat_observations(data_url, sample_size=5)
@@ -224,6 +312,7 @@ class DataConnectorService:
                 "message": "SOCAT sample loaded successfully.",
                 "columns": list(frame.columns),
                 "records": frame.fillna("").to_dict(orient="records"),
+                "query_hint": query_hint,
                 "config": config,
             }
         except RealDataLoadError as exc:

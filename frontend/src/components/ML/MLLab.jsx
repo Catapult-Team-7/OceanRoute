@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { API_BASE } from "../../utils/constants";
+import { HACKATHON_API_DEFAULTS } from "../../utils/demoMissionData";
 
 const DEFAULT_FORM = {
   epochs: 18,
@@ -11,16 +12,16 @@ const DEFAULT_FORM = {
 
 const MODEL_LIMITS = [
   {
-    title: "Model class is still lightweight",
-    copy: "The current trainer is a fast regression baseline, not the full spatiotemporal ConvLSTM from the spec.",
+    title: "Labels are still sparse",
+    copy: "The ConvLSTM now trains on monthly aligned tensors, but target coverage still depends on where SOCAT observations exist.",
   },
   {
-    title: "Targets are only partially physical",
-    copy: "We now use real SOCAT plus NOAA CO2, but the target still depends on estimated features where live gridded drivers are missing.",
+    title: "Biogeochemical drivers are incomplete",
+    copy: "Currents, salinity, temperature, sea level, and atmospheric CO2 are supported, but chlorophyll and richer ecosystem drivers are still missing.",
   },
   {
-    title: "ERA5 is local, not global",
-    copy: "Your current ERA5 files are a point time-series at 0°, 0°, which helps temporal context but not global spatial training.",
+    title: "Routing is partially forced",
+    copy: "High-frequency Copernicus routing and local ERA5 wind enrichment are wired in, but routing quality improves a lot once global ERA5 grids and AIS constraints are added.",
   },
 ];
 
@@ -40,9 +41,46 @@ export default function MLLab() {
   const [isSavingApis, setIsSavingApis] = useState(false);
   const [previewById, setPreviewById] = useState({});
   const [previewingId, setPreviewingId] = useState("");
+  const [syncingId, setSyncingId] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const [backendHealth, setBackendHealth] = useState({ reachable: false, checked: false, detail: "" });
   const dataSummary = status?.data_summary || {};
   const connectorState = dataSummary.connector_state || {};
   const usingRealData = dataSummary.source === "real_observation_sample";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHealth() {
+      try {
+        const response = await fetch(`${API_BASE}/health`);
+        if (!response.ok) {
+          throw new Error(`Health check returned ${response.status}`);
+        }
+        const data = await response.json();
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: data.status === "ok",
+            checked: true,
+            detail: data.status === "ok" ? `Backend reachable at ${API_BASE}` : `Unexpected health response from ${API_BASE}`,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: false,
+            checked: true,
+            detail: `Backend unreachable at ${API_BASE}. Start or restart the backend and try again.`,
+          });
+        }
+      }
+    }
+
+    loadHealth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,10 +111,13 @@ export default function MLLab() {
         const response = await fetch(`${API_BASE}/api/ml/apis`);
         const data = await response.json();
         if (!cancelled) {
-          setApiDrafts(data.apis || []);
+          setApiDrafts(data.apis?.length ? data.apis : HACKATHON_API_DEFAULTS);
         }
       } catch (error) {
         console.error("Failed to load API config", error);
+        if (!cancelled) {
+          setApiDrafts(HACKATHON_API_DEFAULTS);
+        }
       }
     }
 
@@ -89,15 +130,25 @@ export default function MLLab() {
   async function startTraining() {
     setIsSubmitting(true);
     try {
+      if (!backendHealth.reachable) {
+        throw new Error(`Backend unreachable at ${API_BASE}. Check that /health responds before training.`);
+      }
+      await saveApis();
       const response = await fetch(`${API_BASE}/api/ml/train`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(errorBody || `Training request failed with status ${response.status}`);
+      }
       const data = await response.json();
       setStatus(data.training);
+      setActionMessage(data.started ? "Training started." : "Training is already running.");
     } catch (error) {
       console.error("Failed to start training", error);
+      setActionMessage(`Training failed to start: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -113,11 +164,78 @@ export default function MLLab() {
       });
       const data = await response.json();
       setApiDrafts(data.apis || []);
+      setActionMessage("Connector settings saved.");
+      return data.apis || [];
     } catch (error) {
       console.error("Failed to save API config", error);
+      setActionMessage(`Failed to save connector settings: ${error.message}`);
+      return null;
     } finally {
       setIsSavingApis(false);
     }
+  }
+
+  function enableHackathonSources() {
+    setApiDrafts((current) =>
+      (current.length ? current : HACKATHON_API_DEFAULTS).map((api) => {
+        if (api.id === "socat" || api.id === "noaa_gml_co2" || api.id === "era5" || api.id === "copernicus_marine") {
+          return {
+            ...api,
+            enabled: true,
+            status: api.id === "copernicus_marine" ? "testing" : "connected",
+            notes:
+              api.id === "era5"
+                ? "Training_Data/ERA"
+                : api.id === "copernicus_marine"
+                  ? "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                    "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                    "path=Training_Data/Copernicus"
+                  : api.notes,
+          };
+        }
+        return api;
+      })
+    );
+  }
+
+  async function saveAndStartHackathonTraining() {
+    enableHackathonSources();
+    const nextDrafts = (apiDrafts.length ? apiDrafts : HACKATHON_API_DEFAULTS).map((api) => {
+      if (api.id === "socat" || api.id === "noaa_gml_co2" || api.id === "era5" || api.id === "copernicus_marine") {
+        return {
+          ...api,
+          enabled: true,
+          status: api.id === "copernicus_marine" ? "testing" : "connected",
+          notes:
+            api.id === "era5"
+              ? "Training_Data/ERA"
+              : api.id === "copernicus_marine"
+                ? "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                  "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                  "path=Training_Data/Copernicus"
+                : api.notes,
+        };
+      }
+      return api;
+    });
+    setApiDrafts(nextDrafts);
+
+    setIsSavingApis(true);
+    try {
+      await fetch(`${API_BASE}/api/ml/apis`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextDrafts),
+      });
+      setActionMessage("Hackathon defaults saved.");
+    } catch (error) {
+      console.error("Failed to save hackathon API config", error);
+      setActionMessage(`Failed to save hackathon defaults: ${error.message}`);
+    } finally {
+      setIsSavingApis(false);
+    }
+
+    await startTraining();
   }
 
   async function previewConnector(connectorId) {
@@ -128,10 +246,29 @@ export default function MLLab() {
       });
       const data = await response.json();
       setPreviewById((current) => ({ ...current, [connectorId]: data }));
+      setActionMessage(`${data.connector_name || connectorId} preview: ${data.status}`);
     } catch (error) {
       console.error("Failed to preview connector", error);
+      setActionMessage(`Failed to preview ${connectorId}: ${error.message}`);
     } finally {
       setPreviewingId("");
+    }
+  }
+
+  async function syncConnector(connectorId) {
+    setSyncingId(connectorId);
+    try {
+      const response = await fetch(`${API_BASE}/api/connectors/${connectorId}/sync`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      setPreviewById((current) => ({ ...current, [connectorId]: data }));
+      setActionMessage(`${data.connector_name || connectorId} sync: ${data.status}`);
+    } catch (error) {
+      console.error("Failed to sync connector", error);
+      setActionMessage(`Failed to sync ${connectorId}: ${error.message}`);
+    } finally {
+      setSyncingId("");
     }
   }
 
@@ -142,10 +279,22 @@ export default function MLLab() {
           <p className="eyebrow">Training Workspace</p>
           <h2>OceanPulse ML Lab</h2>
           <p className="subtle">
-            This lab can now train on a real observation sample built from SOCAT surface-ocean records plus NOAA GML
-            monthly atmospheric CO2. If those connectors are not ready yet, OceanPulse falls back to the synthetic
-            demo grid so the rest of the app stays usable.
+            This lab trains only on real-source inputs. Right now that means SOCAT surface-ocean observations, NOAA
+            GML monthly atmospheric CO2, your local ERA5 enrichment, and Copernicus monthly plus routing grids when
+            they are synced locally.
           </p>
+          <div className="connector-actions">
+            <button type="button" className="primary-button" onClick={enableHackathonSources}>
+              Enable Hackathon Defaults
+            </button>
+            <button type="button" className="secondary-button" onClick={saveAndStartHackathonTraining}>
+              Save + Start Training
+            </button>
+          </div>
+          {actionMessage ? <p className="subtle">{actionMessage}</p> : null}
+          {backendHealth.checked ? (
+            <p className={backendHealth.reachable ? "subtle" : "error-copy"}>{backendHealth.detail}</p>
+          ) : null}
         </div>
 
         <div className="ml-section">
@@ -209,8 +358,14 @@ export default function MLLab() {
           <div className="progress-track">
             <div className="progress-fill" style={{ width: `${(status?.progress || 0) * 100}%` }} />
           </div>
+          {status?.metrics?.stage ? (
+            <p className="subtle">
+              Stage: <strong>{status.metrics.stage}</strong>
+              {status?.metrics?.detail ? ` · ${status.metrics.detail}` : ""}
+            </p>
+          ) : null}
           <p className="subtle">
-            Training source: <strong>{dataSummary.source || "synthetic_demo_grid"}</strong>
+            Training source: <strong>{dataSummary.source || "unconfigured_real_pipeline"}</strong>
           </p>
           <div className="ml-metrics-grid">
             <article className="ml-metric-card">
@@ -281,6 +436,16 @@ export default function MLLab() {
                   >
                     {previewingId === api.id ? "Previewing…" : "Preview Connector"}
                   </button>
+                  {api.id === "copernicus_marine" ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => syncConnector(api.id)}
+                      disabled={syncingId === api.id}
+                    >
+                      {syncingId === api.id ? "Syncing…" : "Sync Copernicus"}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="api-config-grid">
                   <label className="toggle-label">
@@ -333,7 +498,11 @@ export default function MLLab() {
                     <input
                       type="text"
                       value={api.notes || ""}
-                      placeholder={`Env: ${api.env_var}`}
+                      placeholder={
+                        api.id === "copernicus_marine"
+                          ? "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;path=Training_Data/Copernicus"
+                          : `Env: ${api.env_var}`
+                      }
                       onChange={(event) =>
                         setApiDrafts((current) =>
                           current.map((item, itemIndex) =>
@@ -372,15 +541,17 @@ export default function MLLab() {
               <>
                 <li>Load SOCAT surface-ocean observations from the configured source URL.</li>
                 <li>Load NOAA GML monthly atmospheric CO2 and join it by year and month.</li>
-                <li>Enrich the observation sample with local ERA5 monthly conditions when that folder is available.</li>
-                <li>Construct a first-pass air-sea flux target and train the regression model.</li>
+                <li>Build monthly aligned tensors from ERA5 plus Copernicus salinity, currents, temperature, and sea level.</li>
+                <li>Train the ConvLSTM on monthly sequences and save a checkpoint for later inference.</li>
+                <li>Keep high-frequency Copernicus routing files ready for live-map inference.</li>
               </>
             ) : (
               <>
-                <li>Check whether SOCAT and NOAA GML connectors are enabled and have valid URLs.</li>
-                <li>Fall back to the synthetic ocean grid if the real observation path is not ready.</li>
-                <li>Train a lightweight regression model to keep the control plane and map outputs working.</li>
-                <li>Switch automatically to the real observation sample once those connectors are configured.</li>
+                <li>Enable SOCAT and NOAA GML connectors and keep their source URLs valid.</li>
+                <li>Point ERA5 to your local folder or a real remote source.</li>
+                <li>Sync Copernicus monthly physics and routing subsets once dataset IDs and credentials are configured.</li>
+                <li>Start training only after those real inputs are confirmed.</li>
+                <li>No synthetic fallback is used anywhere in this training path.</li>
               </>
             )}
           </ol>
@@ -388,6 +559,7 @@ export default function MLLab() {
             SOCAT: {connectorState.socat?.enabled ? "enabled" : "disabled"} · NOAA GML:{" "}
             {connectorState.noaa_gml_co2?.enabled ? "enabled" : "disabled"}
           </p>
+          <p className="subtle">Enable these first: SOCAT, NOAA GML CO2, and your local ERA5 folder.</p>
         </div>
 
         <div className="ml-section">

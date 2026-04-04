@@ -18,7 +18,8 @@ class TrainingConfig(BaseModel):
 
 
 class ApiSourceUpdate(BaseModel):
-    name: str
+    id: str | None = None
+    name: str | None = None
     enabled: bool = False
     status: str | None = None
     url: str | None = None

@@ -5,6 +5,20 @@ import { formatCoords } from "../../utils/formatters";
 export default function AnomalyList() {
   const anomalies = useOceanStore((state) => state.anomalies);
   const setSelectedPoint = useOceanStore((state) => state.setSelectedPoint);
+  const heatmapData = useOceanStore((state) => state.heatmapData);
+  const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
+
+  if (!verifiedMap) {
+    return (
+      <section className="sidebar-section">
+        <div className="section-header">
+          <h2>Anomaly Alerts</h2>
+          <span>0</span>
+        </div>
+        <p className="empty-state">Anomaly alerts stay hidden until the map is backed by verified gridded data.</p>
+      </section>
+    );
+  }
 
   return (
     <section className="sidebar-section">

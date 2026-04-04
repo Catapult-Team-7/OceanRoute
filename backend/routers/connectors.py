@@ -27,3 +27,14 @@ async def preview_connector(
     if preview.get("status") == "error" and "Unknown connector" in preview.get("message", ""):
         raise HTTPException(status_code=404, detail=preview["message"])
     return preview
+
+
+@router.post("/connectors/{connector_id}/sync")
+async def sync_connector(
+    connector_id: str,
+    service: Annotated[DataConnectorService, Depends(get_connector_service)],
+):
+    result = service.sync(connector_id)
+    if result.get("status") == "error" and "not implemented" in result.get("message", ""):
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result

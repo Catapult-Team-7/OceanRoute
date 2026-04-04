@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo, useState } from "react";
 
-import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 
 import { useHeatmapData } from "../../hooks/useHeatmapData";
@@ -63,6 +63,9 @@ export default function OceanMap() {
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
   const setSelectedPoint = useOceanStore((state) => state.setSelectedPoint);
   const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
+  const [showBrief, setShowBrief] = useState(true);
+  const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
+  const sourceSummary = heatmapData?.metadata?.source_summary || "";
 
   const points = heatmapData?.features || [];
   const plasticHotspots = useMemo(() => {
@@ -121,6 +124,16 @@ export default function OceanMap() {
     return points.filter((_, index) => index % stride === 0);
   }, [points, selectedRegion, viewState.zoom]);
 
+  const routeLabels = useMemo(
+    () =>
+      plasticHotspots.map((item) => ({
+        id: `${item.id}-label`,
+        position: [item.lon, item.lat],
+        label: item.label,
+      })),
+    [plasticHotspots]
+  );
+
   const tooltipText = ({ object }) => {
     if (!object) return null;
     if (object.routeTarget?.port) {
@@ -147,7 +160,9 @@ export default function OceanMap() {
   };
 
   const layers = useMemo(
-    () => [
+    () =>
+      verifiedMap
+        ? [
       new ScatterplotLayer({
         id: "flux-cells",
         data: displayPoints,
@@ -164,9 +179,9 @@ export default function OceanMap() {
         id: "recovery-routes",
         data: routeSegments,
         getPath: (d) => d.path,
-        getColor: (d) => (d.weakening > 0.35 ? [255, 120, 98, 210] : [255, 209, 102, 198]),
-        getWidth: (d) => 7000 + d.density * 12000,
-        widthMinPixels: 2,
+        getColor: (d) => (d.weakening > 0.35 ? [255, 120, 98, 225] : [255, 209, 102, 214]),
+        getWidth: (d) => 9000 + d.density * 15000,
+        widthMinPixels: 3,
         rounded: true,
         pickable: true,
       }),
@@ -208,26 +223,51 @@ export default function OceanMap() {
         id: "plastic-hotspots",
         data: plasticHotspots,
         getPosition: (d) => [d.lon, d.lat],
-        getRadius: (d) => 70000 + d.density * 90000,
-        getFillColor: (d) => [255, 196, 61, 26 + Math.round(d.density * 42)],
-        getLineColor: [255, 230, 160, 136],
-        lineWidthMinPixels: 2,
+        getRadius: (d) => 90000 + d.density * 110000,
+        getFillColor: (d) => [255, 196, 61, 34 + Math.round(d.density * 52)],
+        getLineColor: [255, 230, 160, 180],
+        lineWidthMinPixels: 3,
         stroked: true,
         pickable: true,
       }),
-    ],
-    [anomalies, displayPoints, plasticHotspots, routeSegments, sinkNodes, viewState.zoom, weakeningZones]
+      new TextLayer({
+        id: "plastic-hotspot-labels",
+        data: routeLabels,
+        getPosition: (d) => d.position,
+        getText: (d) => d.label,
+        getColor: [246, 249, 252, 210],
+        getSize: 12,
+        sizeUnits: "pixels",
+        getPixelOffset: [0, -16],
+        getTextAnchor: "middle",
+        getAlignmentBaseline: "bottom",
+        pickable: false,
+      }),
+    ]
+        : [],
+    [anomalies, displayPoints, plasticHotspots, routeLabels, routeSegments, sinkNodes, verifiedMap, viewState.zoom, weakeningZones]
   );
 
   return (
     <div className="ocean-map">
-      <div className="map-brief">
-        <div>
-          <span className="map-brief-label">Mission Map</span>
-          <strong>Carbon sinks, weakening zones, and recovery corridors</strong>
+      {showBrief ? (
+        <div className="map-brief">
+          <div>
+            <span className="map-brief-label">Mission Map</span>
+            <strong>Carbon sinks, weakening zones, and recovery corridors</strong>
+          </div>
+          <div className="map-brief-actions">
+            <span className="map-brief-meta">{selectedRegion} view</span>
+            <button type="button" className="map-brief-close" onClick={() => setShowBrief(false)}>
+              Hide
+            </button>
+          </div>
         </div>
-        <span className="map-brief-meta">{selectedRegion} view</span>
-      </div>
+      ) : (
+        <button type="button" className="map-brief-restore" onClick={() => setShowBrief(true)}>
+          Show map brief
+        </button>
+      )}
       <DeckGL
         controller={{ dragRotate: false, touchRotate: false }}
         viewState={viewState}
@@ -246,6 +286,12 @@ export default function OceanMap() {
           <MapLibreSurface />
         </Suspense>
       </DeckGL>
+      {!verifiedMap ? (
+        <div className="map-empty-state">
+          <strong>No verified ocean layers are available yet.</strong>
+          <span>{sourceSummary || "The current backend map is still demo-backed, so overlays are intentionally hidden."}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

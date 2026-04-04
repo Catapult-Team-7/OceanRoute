@@ -3,22 +3,26 @@ import { formatFlux } from "../../utils/formatters";
 
 export default function GlobalStats() {
   const globalStats = useOceanStore((state) => state.globalStats);
+  const heatmapData = useOceanStore((state) => state.heatmapData);
+  const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
 
   const cards = [
     {
       label: "Mean Flux",
-      value: formatFlux(globalStats.meanFlux),
-      sub: globalStats.meanFlux < 0 ? "Net sink state" : "Net source state",
+      value: verifiedMap ? formatFlux(globalStats.meanFlux) : "Unavailable",
+      sub: verifiedMap ? (globalStats.meanFlux < 0 ? "Net sink state" : "Net source state") : "Waiting for verified gridded data",
     },
     {
       label: "Sink Coverage",
-      value: globalStats.sinkCoverage == null ? "—" : `${globalStats.sinkCoverage.toFixed(1)}%`,
-      sub: "Ocean cells with negative flux",
+      value: verifiedMap && globalStats.sinkCoverage != null ? `${globalStats.sinkCoverage.toFixed(1)}%` : "Unavailable",
+      sub: verifiedMap ? "Ocean cells with negative flux" : "Suppressed until the map is source-backed",
     },
     {
-      label: "Demo Metric",
-      value: "10.2 Gt CO2",
-      sub: "Monitored equivalent this year",
+      label: "Model Status",
+      value: heatmapData?.metadata?.trained_model_ready ? "Trained" : "Baseline",
+      sub: heatmapData?.metadata?.verified_map
+        ? "Can be compared against verified map inputs"
+        : "Training exists, but the spatial map is not verified yet",
     },
   ];
 

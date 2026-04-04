@@ -49,6 +49,9 @@ class HeatmapMetadata(BaseModel):
     sink_area_pct: float
     inference_mode: str
     trained_model_ready: bool
+    verified_map: bool = False
+    map_source: str = "synthetic_demo_grid"
+    source_summary: str = ""
 
 
 class FeatureGeometry(BaseModel):

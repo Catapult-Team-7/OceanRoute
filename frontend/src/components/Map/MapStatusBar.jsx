@@ -18,6 +18,8 @@ export default function MapStatusBar() {
       topRoutePriority,
       modelReady: heatmapData?.metadata?.trained_model_ready,
       mode: heatmapData?.metadata?.inference_mode || "observed_demo_baseline",
+      verifiedMap: heatmapData?.metadata?.verified_map || false,
+      mapSource: heatmapData?.metadata?.map_source || "unavailable",
       anomalyCount: anomalies.length,
     };
   }, [anomalies.length, heatmapData]);
@@ -25,7 +27,7 @@ export default function MapStatusBar() {
   return (
     <div className="map-status-bar">
       <div className="map-status-chip">
-        <strong>{summary.modelReady ? "ML mode" : "Demo mode"}</strong>
+        <strong>{summary.verifiedMap ? "Verified map" : "Map status"}</strong>
         <span>{summary.mode}</span>
       </div>
       <div className="map-status-chip">
@@ -33,20 +35,24 @@ export default function MapStatusBar() {
         <span>{selectedRegion}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Sink cells</strong>
-        <span>{summary.sinkCells}</span>
+        <strong>Source</strong>
+        <span>{summary.mapSource}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Weakening</strong>
-        <span>{summary.maxWeakening.toFixed(2)} max score</span>
+        <strong>ML</strong>
+        <span>{summary.modelReady ? "trained" : "not trained"}</span>
       </div>
       <div className="map-status-chip">
         <strong>Alerts</strong>
-        <span>{summary.anomalyCount} active anomalies</span>
+        <span>{summary.verifiedMap ? `${summary.anomalyCount} active anomalies` : "hidden until verified"}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Routing</strong>
-        <span>{summary.topRoutePriority.toFixed(2)} top route priority</span>
+        <strong>Overlays</strong>
+        <span>
+          {summary.verifiedMap
+            ? `${summary.sinkCells} sinks · ${summary.maxWeakening.toFixed(2)} weakening · ${summary.topRoutePriority.toFixed(2)} routing`
+            : "suppressed until real gridded data is wired"}
+        </span>
       </div>
     </div>
   );
