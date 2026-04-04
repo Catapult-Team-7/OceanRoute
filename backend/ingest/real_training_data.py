@@ -85,6 +85,45 @@ def _safe_numeric(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return frame
 
 
+def _decode_copernicus_time_coord(time_var) -> pd.DatetimeIndex | None:
+    raw_values = np.asarray(time_var.values)
+    if raw_values.size == 0:
+        return None
+
+    if np.issubdtype(raw_values.dtype, np.datetime64):
+        decoded = pd.to_datetime(raw_values, utc=True, errors="coerce")
+        return decoded.tz_localize(None) if getattr(decoded, "tz", None) is not None else decoded
+
+    units = str(time_var.attrs.get("units", "")).strip().lower()
+    origin = None
+    unit = None
+    if "since" in units:
+        unit_label, origin_label = units.split("since", 1)
+        origin = pd.to_datetime(origin_label.strip(), utc=True, errors="coerce")
+        unit_label = unit_label.strip()
+        if unit_label.startswith("hour"):
+            unit = "h"
+        elif unit_label.startswith("day"):
+            unit = "D"
+        elif unit_label.startswith("minute"):
+            unit = "m"
+        elif unit_label.startswith("second"):
+            unit = "s"
+
+    numeric_values = pd.to_numeric(raw_values.reshape(-1), errors="coerce")
+    if unit and origin is not None and not pd.isna(origin):
+        valid_mask = np.isfinite(numeric_values) & (np.abs(numeric_values) < 1e12)
+        decoded_flat = np.full(numeric_values.shape, np.datetime64("NaT"), dtype="datetime64[ns]")
+        if valid_mask.any():
+            decoded_valid = origin + pd.to_timedelta(numeric_values[valid_mask], unit=unit)
+            decoded_flat[valid_mask] = decoded_valid.tz_convert("UTC").tz_localize(None).to_numpy(dtype="datetime64[ns]")
+        return pd.DatetimeIndex(decoded_flat.reshape(raw_values.shape))
+
+    decoded = pd.to_datetime(raw_values.reshape(-1), utc=True, errors="coerce")
+    decoded = decoded.tz_localize(None) if getattr(decoded, "tz", None) is not None else decoded
+    return pd.DatetimeIndex(decoded.to_numpy().reshape(raw_values.shape))
+
+
 def _build_socat_erddap_query(base_url: str, sample_size: int = 15000) -> str:
     root = base_url.split("?", 1)[0]
     columns = [
@@ -401,13 +440,22 @@ def load_copernicus_monthly(copernicus_directory: str | Path | None = None) -> p
     for file_path in files:
         logger.info("loading_copernicus_file path=%s", file_path)
         try:
-            dataset = xr.open_dataset(file_path)
+            dataset = xr.open_dataset(file_path, decode_times=False)
         except Exception as exc:
             raise RealDataLoadError(f"Failed to open Copernicus file {file_path}: {exc}") from exc
 
         lat_name = next((name for name in ("latitude", "lat") if name in dataset.coords or name in dataset.dims), None)
         lon_name = next((name for name in ("longitude", "lon") if name in dataset.coords or name in dataset.dims), None)
         time_name = next((name for name in ("time", "valid_time") if name in dataset.coords or name in dataset.dims), None)
+        if time_name and time_name in dataset.coords:
+            decoded_time = _decode_copernicus_time_coord(dataset[time_name])
+            if decoded_time is not None:
+                valid_mask = ~pd.isna(decoded_time)
+                if np.any(valid_mask):
+                    valid_index = np.where(valid_mask)[0]
+                    dataset = dataset.isel({time_name: valid_index})
+                    dataset = dataset.assign_coords({time_name: decoded_time[valid_index]})
+                    dataset = dataset.sortby(time_name)
         if not lat_name or not lon_name:
             continue
 
