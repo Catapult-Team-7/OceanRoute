@@ -10,41 +10,7 @@ import httpx
 from app.config import settings
 from app.schemas import GridPoint, OperationalContext, OperationalGridFrame, SourceMode
 from app.services.artifact_service import write_raw_payload
-
-
-SF_BAY_BOUNDS = {
-    "lat_min": 37.45,
-    "lat_max": 38.25,
-    "lon_min": -123.05,
-    "lon_max": -121.75,
-}
-
-SF_BAY_CELLS = [
-    {"cell_id": "golden_gate", "lat": 37.805, "lon": -122.475, "shoreline_proximity": 0.55, "restricted": False},
-    {"cell_id": "north_bay", "lat": 38.025, "lon": -122.395, "shoreline_proximity": 0.36, "restricted": False},
-    {"cell_id": "angel_island", "lat": 37.86, "lon": -122.43, "shoreline_proximity": 0.52, "restricted": False},
-    {"cell_id": "central_bay", "lat": 37.81, "lon": -122.375, "shoreline_proximity": 0.21, "restricted": False},
-    {"cell_id": "oakland_approach", "lat": 37.79, "lon": -122.29, "shoreline_proximity": 0.33, "restricted": False},
-    {"cell_id": "richmond_shoal", "lat": 37.925, "lon": -122.39, "shoreline_proximity": 0.48, "restricted": False},
-    {"cell_id": "alameda_corridor", "lat": 37.765, "lon": -122.265, "shoreline_proximity": 0.41, "restricted": False},
-    {"cell_id": "san_leandro", "lat": 37.71, "lon": -122.19, "shoreline_proximity": 0.58, "restricted": False},
-    {"cell_id": "south_bay", "lat": 37.585, "lon": -122.16, "shoreline_proximity": 0.64, "restricted": False},
-    {"cell_id": "mission_creek", "lat": 37.772, "lon": -122.387, "shoreline_proximity": 0.82, "restricted": True},
-    {"cell_id": "port_of_oakland", "lat": 37.787, "lon": -122.312, "shoreline_proximity": 0.72, "restricted": True},
-    {"cell_id": "berkeley_marina", "lat": 37.866, "lon": -122.313, "shoreline_proximity": 0.67, "restricted": False},
-]
-
-SAMPLE_CURRENT_STATIONS = [
-    {"station_id": "gg01", "name": "Golden Gate current prediction", "lat": 37.8066, "lon": -122.4659, "speed": 1.28, "direction": 118.0, "phase": 0.2},
-    {"station_id": "oak01", "name": "Oakland estuary current prediction", "lat": 37.7955, "lon": -122.2782, "speed": 0.84, "direction": 142.0, "phase": 1.1},
-    {"station_id": "sb01", "name": "South Bay current prediction", "lat": 37.587, "lon": -122.06, "speed": 0.62, "direction": 171.0, "phase": 2.3},
-]
-
-SAMPLE_WIND_STATIONS = [
-    {"station_id": "9414290", "name": "San Francisco", "lat": 37.8063, "lon": -122.4659, "speed": 6.2, "direction": 284.0, "water_temperature_c": 13.8},
-    {"station_id": "9414750", "name": "Alameda", "lat": 37.771, "lon": -122.3, "speed": 4.9, "direction": 296.0, "water_temperature_c": 14.2},
-    {"station_id": "9413450", "name": "Richmond", "lat": 37.9233, "lon": -122.415, "speed": 5.5, "direction": 273.0, "water_temperature_c": 13.5},
-]
+from app.services.region_service import RegionDefinition, get_region_definition
 
 
 @dataclass
@@ -73,10 +39,10 @@ def _forecast_hours(max_horizon: int) -> list[int]:
     return hours
 
 
-def _in_bounds(lat: float, lon: float) -> bool:
+def _in_bounds(lat: float, lon: float, bounds: dict[str, float]) -> bool:
     return (
-        SF_BAY_BOUNDS["lat_min"] <= lat <= SF_BAY_BOUNDS["lat_max"]
-        and SF_BAY_BOUNDS["lon_min"] <= lon <= SF_BAY_BOUNDS["lon_max"]
+        bounds["lat_min"] <= lat <= bounds["lat_max"]
+        and bounds["lon_min"] <= lon <= bounds["lon_max"]
     )
 
 
@@ -138,9 +104,10 @@ def _build_frame(
     horizon_hour: int,
     current_vectors: list[VectorObservation],
     wind_vectors: list[VectorObservation],
+    region: RegionDefinition,
 ) -> OperationalGridFrame:
     grid: list[GridPoint] = []
-    for cell in SF_BAY_CELLS:
+    for cell in region.cells:
         current_u, current_v = _interpolate_vector(cell["lat"], cell["lon"], current_vectors)
         wind_u, wind_v = _interpolate_vector(cell["lat"], cell["lon"], wind_vectors)
         grid.append(
@@ -156,13 +123,13 @@ def _build_frame(
                 restricted=cell["restricted"],
                 water_temperature_c=_interpolate_temperature(cell["lat"], cell["lon"], wind_vectors),
             )
-        )
+    )
     return OperationalGridFrame(valid_at=valid_at, horizon_hour=horizon_hour, grid=grid)
 
 
-def _sample_current_vectors(horizon_hour: int, seed: int) -> list[VectorObservation]:
+def _sample_current_vectors(region: RegionDefinition, horizon_hour: int, seed: int) -> list[VectorObservation]:
     vectors: list[VectorObservation] = []
-    for index, station in enumerate(SAMPLE_CURRENT_STATIONS):
+    for index, station in enumerate(region.sample_current_stations):
         wobble = sin((horizon_hour + seed + index) * 0.24 + station["phase"])
         speed = max(0.12, station["speed"] + (0.18 * wobble))
         direction = (station["direction"] + (17.0 * wobble)) % 360
@@ -179,9 +146,9 @@ def _sample_current_vectors(horizon_hour: int, seed: int) -> list[VectorObservat
     return vectors
 
 
-def _sample_wind_vectors(horizon_hour: int, seed: int) -> list[VectorObservation]:
+def _sample_wind_vectors(region: RegionDefinition, horizon_hour: int, seed: int) -> list[VectorObservation]:
     vectors: list[VectorObservation] = []
-    for index, station in enumerate(SAMPLE_WIND_STATIONS):
+    for index, station in enumerate(region.sample_wind_stations):
         wobble = sin((horizon_hour + seed + index) * 0.18)
         speed = max(0.5, station["speed"] + (0.8 * wobble))
         direction = (station["direction"] + (12.0 * wobble)) % 360
@@ -199,25 +166,33 @@ def _sample_wind_vectors(horizon_hour: int, seed: int) -> list[VectorObservation
     return vectors
 
 
-def _load_sample_context(horizon_hours: int, seed: int, requested_mode: SourceMode) -> OperationalContext:
-    generated_at = _now()
+def _load_sample_context(
+    horizon_hours: int,
+    seed: int,
+    requested_mode: SourceMode,
+    region: RegionDefinition,
+    generated_at_override: datetime | None = None,
+) -> OperationalContext:
+    generated_at = (generated_at_override or _now()).replace(minute=0, second=0, microsecond=0)
     frames = []
     for horizon_hour in _forecast_hours(horizon_hours):
         frames.append(
             _build_frame(
                 valid_at=generated_at + timedelta(hours=horizon_hour),
                 horizon_hour=horizon_hour,
-                current_vectors=_sample_current_vectors(horizon_hour, seed),
-                wind_vectors=_sample_wind_vectors(horizon_hour, seed),
+                current_vectors=_sample_current_vectors(region, horizon_hour, seed),
+                wind_vectors=_sample_wind_vectors(region, horizon_hour, seed),
+                region=region,
             )
         )
     return OperationalContext(
         generated_at=generated_at,
-        pilot_region=settings.pilot_region,
+        pilot_region=region.id,
+        region=region.to_info(),
         source_mode_requested=requested_mode,
         source_mode_used="sample",
         is_fallback=False,
-        source_notes=["Using deterministic SF Bay NOAA-style fixture data."],
+        source_notes=[f"Using deterministic {region.name} NOAA-style fixture data."],
         frames=frames,
     )
 
@@ -246,27 +221,27 @@ def _fetch_json(client: httpx.Client, url: str, params: dict[str, Any]) -> dict[
     return payload
 
 
-def _fetch_live_current_stations(client: httpx.Client) -> list[dict[str, Any]]:
+def _fetch_live_current_stations(client: httpx.Client, region: RegionDefinition) -> list[dict[str, Any]]:
     metadata_url = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json"
     for station_type in ("currentpredictions", "currents"):
         payload = _fetch_json(client, metadata_url, {"type": station_type})
         items = [
             item
             for item in _coops_station_payload_items(payload)
-            if _in_bounds(_to_float(item, "lat"), _to_float(item, "lng", "lon"))
+            if _in_bounds(_to_float(item, "lat"), _to_float(item, "lng", "lon"), region.bbox)
         ]
         if items:
             return items[:4]
     return []
 
 
-def _fetch_live_met_stations(client: httpx.Client) -> list[dict[str, Any]]:
+def _fetch_live_met_stations(client: httpx.Client, region: RegionDefinition) -> list[dict[str, Any]]:
     metadata_url = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json"
     payload = _fetch_json(client, metadata_url, {"type": "waterlevels"})
     items = [
         item
         for item in _coops_station_payload_items(payload)
-        if _in_bounds(_to_float(item, "lat"), _to_float(item, "lng", "lon"))
+        if _in_bounds(_to_float(item, "lat"), _to_float(item, "lng", "lon"), region.bbox)
     ]
     return items[:5]
 
@@ -395,13 +370,18 @@ def _parse_wind_observation(station: dict[str, Any], wind_payload: dict[str, Any
     )
 
 
-def _load_live_context(horizon_hours: int, requested_mode: SourceMode) -> OperationalContext:
-    generated_at = _now()
+def _load_live_context(
+    horizon_hours: int,
+    requested_mode: SourceMode,
+    region: RegionDefinition,
+    generated_at_override: datetime | None = None,
+) -> OperationalContext:
+    generated_at = (generated_at_override or _now()).replace(minute=0, second=0, microsecond=0)
     timeout = httpx.Timeout(settings.live_request_timeout_seconds)
     with httpx.Client(timeout=timeout) as client:
-        current_stations = _fetch_live_current_stations(client)
+        current_stations = _fetch_live_current_stations(client, region)
         if not current_stations:
-            raise RuntimeError("No NOAA current-prediction stations were available for the SF Bay bounds.")
+            raise RuntimeError(f"No NOAA current-prediction stations were available for region {region.id}.")
 
         current_vectors_by_hour: dict[int, list[VectorObservation]] = {hour: [] for hour in _forecast_hours(horizon_hours)}
         for station in current_stations:
@@ -410,7 +390,7 @@ def _load_live_context(horizon_hours: int, requested_mode: SourceMode) -> Operat
                 current_vectors_by_hour.setdefault(hour, []).append(observation)
 
         met_vectors: list[VectorObservation] = []
-        for station in _fetch_live_met_stations(client):
+        for station in _fetch_live_met_stations(client, region):
             try:
                 wind_payload = _fetch_latest_wind(client, str(station["id"]))
                 try:
@@ -424,7 +404,7 @@ def _load_live_context(horizon_hours: int, requested_mode: SourceMode) -> Operat
                 continue
 
     if not met_vectors:
-        raise RuntimeError("No NOAA met stations with wind observations were available for the SF Bay bounds.")
+        raise RuntimeError(f"No NOAA met stations with wind observations were available for region {region.id}.")
 
     frames: list[OperationalGridFrame] = []
     for horizon_hour in _forecast_hours(horizon_hours):
@@ -437,16 +417,19 @@ def _load_live_context(horizon_hours: int, requested_mode: SourceMode) -> Operat
                 horizon_hour=horizon_hour,
                 current_vectors=current_vectors,
                 wind_vectors=met_vectors,
+                region=region,
             )
         )
 
     return OperationalContext(
         generated_at=generated_at,
-        pilot_region=settings.pilot_region,
+        pilot_region=region.id,
+        region=region.to_info(),
         source_mode_requested=requested_mode,
         source_mode_used="live",
         is_fallback=False,
         source_notes=[
+            f"Region: {region.name}",
             f"NOAA CO-OPS live current-prediction stations: {len(current_stations)}",
             f"NOAA CO-OPS live met stations: {len(met_vectors)}",
         ],
@@ -454,15 +437,22 @@ def _load_live_context(horizon_hours: int, requested_mode: SourceMode) -> Operat
     )
 
 
-def load_operational_context(horizon_hours: int, seed: int, source_mode: SourceMode) -> OperationalContext:
+def load_operational_context(
+    horizon_hours: int,
+    seed: int,
+    source_mode: SourceMode,
+    region_id: str | None = None,
+    generated_at_override: datetime | None = None,
+) -> OperationalContext:
+    region = get_region_definition(region_id)
     if source_mode == "sample":
-        return _load_sample_context(horizon_hours, seed, source_mode)
+        return _load_sample_context(horizon_hours, seed, source_mode, region, generated_at_override)
     if source_mode == "live":
-        return _load_live_context(horizon_hours, source_mode)
+        return _load_live_context(horizon_hours, source_mode, region, generated_at_override)
     try:
-        return _load_live_context(horizon_hours, source_mode)
+        return _load_live_context(horizon_hours, source_mode, region, generated_at_override)
     except Exception as exc:
-        context = _load_sample_context(horizon_hours, seed, source_mode)
+        context = _load_sample_context(horizon_hours, seed, source_mode, region, generated_at_override)
         context.is_fallback = True
         context.source_notes.append(f"Live ingest failed and fell back to sample data: {exc}")
         return context

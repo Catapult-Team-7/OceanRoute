@@ -13,19 +13,20 @@ router = APIRouter(prefix="/export", tags=["export"])
 
 @router.get("/geojson")
 def export_geojson_endpoint(
+    region_id: str | None = Query(default=None),
     horizon_hour: int | None = Query(default=None, ge=1, le=72),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    snapshot = latest_forecast(db, horizon_hour=horizon_hour, min_confidence=min_confidence)
+    snapshot = latest_forecast(db, region_id=region_id, horizon_hour=horizon_hour, min_confidence=min_confidence)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="No forecast has been generated yet.")
     return forecast_to_geojson(snapshot)
 
 
 @router.get("/pdf-brief")
-def export_pdf_brief_endpoint(db: Session = Depends(get_db)) -> Response:
-    snapshot = latest_forecast(db)
+def export_pdf_brief_endpoint(region_id: str | None = Query(default=None), db: Session = Depends(get_db)) -> Response:
+    snapshot = latest_forecast(db, region_id=region_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="No forecast has been generated yet.")
     pdf_bytes = build_pdf_brief_bytes(snapshot)

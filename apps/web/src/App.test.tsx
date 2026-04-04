@@ -16,6 +16,17 @@ const baseForecast = {
   generated_at: "2026-04-04T12:00:00Z",
   horizon_hours: 24,
   pilot_region: "sf_bay_estuary",
+  region: {
+    id: "sf_bay_estuary",
+    name: "San Francisco Bay Estuary",
+    description: "Harbor-estuary pilot",
+    bbox: { lat_min: 37.45, lat_max: 38.25, lon_min: -123.05, lon_max: -121.75 },
+    default_depot_lat: 37.8066,
+    default_depot_lon: -122.4659,
+    grid_dx_km: 1.2,
+    grid_dy_km: 1.2,
+    tags: ["pilot", "harbor", "estuary"],
+  },
   source_mode_requested: "auto",
   source_mode_used: "sample",
   is_fallback: true,
@@ -33,6 +44,13 @@ const baseForecast = {
     age_minutes: 22,
     stale_after_minutes: 180,
     source_notes: ["Using deterministic SF Bay NOAA-style fixture data."],
+    baseline_engine: "custom_particle",
+    baseline_artifact_uri: "C:/tmp/baseline.json",
+    model_id: "model-1",
+    model_architecture: "linear_residual",
+    model_dataset_version: "v2",
+    inference_service_version: "v1",
+    prediction_artifact_uri: "C:/tmp/prediction.json",
   },
   debris_classes: [
     { code: "low", label: "Low-windage fragments", description: "", windage_factor: 0.05 },
@@ -52,6 +70,12 @@ const baseForecast = {
       uncertainty: 0.21,
       confidence: 0.79,
       beaching_risk: 0.4,
+      baseline_density: 1.2,
+      ensemble_spread: 0.11,
+      beaching_fraction: 0.08,
+      stokes_drift_u: 0.02,
+      stokes_drift_v: -0.01,
+      windage_fraction: 0.01,
       restricted: false,
     },
     {
@@ -67,6 +91,12 @@ const baseForecast = {
       uncertainty: 0.45,
       confidence: 0.55,
       beaching_risk: 0.52,
+      baseline_density: 1.9,
+      ensemble_spread: 0.22,
+      beaching_fraction: 0.13,
+      stokes_drift_u: 0.01,
+      stokes_drift_v: -0.02,
+      windage_fraction: 0.025,
       restricted: false,
     },
   ],
@@ -109,6 +139,7 @@ const lowOnlyForecast = {
 const routeResponse = {
   mission_id: "mission-1",
   created_at: "2026-04-04T12:05:00Z",
+  region_id: "sf_bay_estuary",
   vessel_id: "sf-bay-pilot-vessel",
   recommended_mode: "collection",
   target_horizon_hour: 24,
@@ -132,6 +163,10 @@ const routeResponse = {
     age_minutes: 22,
     stale_after_minutes: 180,
     source_notes: ["Using deterministic SF Bay NOAA-style fixture data."],
+    baseline_engine: "custom_particle",
+    model_id: "model-1",
+    model_architecture: "linear_residual",
+    model_dataset_version: "v2",
   },
   forecast_is_stale: false,
   legs: [
@@ -209,6 +244,8 @@ describe("App", () => {
     installFetchMock();
     render(<App />);
 
+    expect(await screen.findByText(/Baseline custom particle/i)).not.toBeNull();
+    expect(screen.getByText(/Model linear_residual v2/i)).not.toBeNull();
     expect((await screen.findAllByText(/north bay/i)).length).toBeGreaterThan(0);
     expect((await screen.findAllByText(/port exit/i)).length).toBeGreaterThan(0);
 
@@ -224,6 +261,7 @@ describe("App", () => {
     const fetchMock = installFetchMock();
     render(<App />);
 
+    await screen.findAllByText(/north bay/i);
     fireEvent.click(await screen.findByRole("button", { name: /Optimize route/i }));
 
     await screen.findByText("north_bay:low");
@@ -237,6 +275,7 @@ describe("App", () => {
     const fetchMock = installFetchMock();
     render(<App />);
 
+    await screen.findAllByText(/north bay/i);
     fireEvent.click(await screen.findByRole("button", { name: /Optimize route/i }));
     await screen.findByText("north_bay:low");
 

@@ -1,6 +1,9 @@
 export type DebrisClass = "low" | "high";
 export type RecommendedMode = "collection" | "recon";
 export type SourceMode = "auto" | "sample" | "live";
+export type BaselineEngine = "pygnome" | "custom_particle";
+export type ModelArchitecture = "linear_residual" | "temporal_unet" | "convlstm";
+export type TrainingScope = "shared" | "per_region";
 
 export interface HealthStatus {
   status: string;
@@ -21,6 +24,18 @@ export interface DebrisClassInfo {
   windage_factor: number;
 }
 
+export interface RegionInfo {
+  id: string;
+  name: string;
+  description: string;
+  bbox: Record<string, number>;
+  default_depot_lat: number;
+  default_depot_lon: number;
+  grid_dx_km: number;
+  grid_dy_km: number;
+  tags: string[];
+}
+
 export interface ForecastStep {
   valid_at: string;
   horizon_hour: number;
@@ -34,6 +49,12 @@ export interface ForecastStep {
   uncertainty: number;
   confidence: number;
   beaching_risk: number;
+  baseline_density: number;
+  ensemble_spread: number;
+  beaching_fraction: number;
+  stokes_drift_u: number;
+  stokes_drift_v: number;
+  windage_fraction: number;
   restricted: boolean;
 }
 
@@ -60,6 +81,14 @@ export interface ForecastProvenance {
   age_minutes: number;
   stale_after_minutes: number;
   source_notes: string[];
+  baseline_engine?: BaselineEngine | null;
+  baseline_artifact_uri?: string | null;
+  model_id?: string | null;
+  model_architecture?: ModelArchitecture | null;
+  model_dataset_version?: string | null;
+  training_scope?: TrainingScope | null;
+  inference_service_version?: string | null;
+  prediction_artifact_uri?: string | null;
 }
 
 export interface ForecastSnapshot {
@@ -67,6 +96,7 @@ export interface ForecastSnapshot {
   generated_at: string;
   horizon_hours: number;
   pilot_region: string;
+  region: RegionInfo;
   source_mode_requested: SourceMode;
   source_mode_used: "sample" | "live";
   is_fallback: boolean;
@@ -91,6 +121,7 @@ export interface RouteLeg {
 export interface RoutePlan {
   mission_id: string;
   created_at: string;
+  region_id: string | null;
   vessel_id: string;
   recommended_mode: RecommendedMode;
   target_horizon_hour: number;

@@ -24,6 +24,14 @@ def build_forecast_provenance(
     source_mode_used: str,
     is_fallback: bool,
     source_notes: list[str],
+    baseline_engine: str | None = None,
+    baseline_artifact_uri: str | None = None,
+    model_id: str | None = None,
+    model_architecture: str | None = None,
+    model_dataset_version: str | None = None,
+    training_scope: str | None = None,
+    inference_service_version: str | None = None,
+    prediction_artifact_uri: str | None = None,
 ) -> ForecastProvenance:
     generated_at = _normalize_timestamp(generated_at)
     age_minutes = max(0, int((_now() - generated_at).total_seconds() // 60))
@@ -38,4 +46,12 @@ def build_forecast_provenance(
         age_minutes=age_minutes,
         stale_after_minutes=stale_after_minutes,
         source_notes=source_notes,
+        baseline_engine=baseline_engine,  # type: ignore[arg-type]
+        baseline_artifact_uri=baseline_artifact_uri,
+        model_id=model_id,
+        model_architecture=model_architecture,  # type: ignore[arg-type]
+        model_dataset_version=model_dataset_version,
+        training_scope=training_scope,  # type: ignore[arg-type]
+        inference_service_version=inference_service_version,
+        prediction_artifact_uri=prediction_artifact_uri,
     )

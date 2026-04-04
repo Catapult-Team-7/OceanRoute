@@ -1,0 +1,208 @@
+{
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions&application=OceanRoute&station=PCT0181&begin_date=20260404&end_date=20260406&time_zone=gmt&units=metric&interval=h&vel_type=speed_dir&format=json",
+  "payload": {
+    "current_predictions": {
+      "units": "meters, cm/s",
+      "cp": [
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 02:13",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 05:12",
+          "Depth": "11.9",
+          "Velocity_Major": 24.8
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 08:19",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "ebb",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 11:50",
+          "Depth": "11.9",
+          "Velocity_Major": -37.5
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 15:30",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 18:24",
+          "Depth": "11.9",
+          "Velocity_Major": 25.3
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-04 22:12",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "ebb",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 00:44",
+          "Depth": "11.9",
+          "Velocity_Major": -23.6
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 02:52",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 05:48",
+          "Depth": "11.9",
+          "Velocity_Major": 20.8
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 08:43",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "ebb",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 12:19",
+          "Depth": "11.9",
+          "Velocity_Major": -35.4
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 16:17",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 19:15",
+          "Depth": "11.9",
+          "Velocity_Major": 22.4
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-05 23:06",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "ebb",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 01:33",
+          "Depth": "11.9",
+          "Velocity_Major": -19.7
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 03:34",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 06:26",
+          "Depth": "11.9",
+          "Velocity_Major": 16.6
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 09:11",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "ebb",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 12:50",
+          "Depth": "11.9",
+          "Velocity_Major": -32.5
+        },
+        {
+          "Type": "slack",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 17:09",
+          "Depth": "11.9",
+          "Velocity_Major": 0
+        },
+        {
+          "Type": "flood",
+          "meanFloodDir": 95,
+          "Bin": "1",
+          "meanEbbDir": 266,
+          "Time": "2026-04-06 20:09",
+          "Depth": "11.9",
+          "Velocity_Major": 19.2
+        }
+      ]
+    }
+  }
+}

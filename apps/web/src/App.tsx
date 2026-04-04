@@ -126,6 +126,24 @@ function sourceLabel(provenance: ForecastProvenance): string {
   return provenance.is_fallback ? `${transition} fallback` : transition;
 }
 
+function baselineLabel(provenance: ForecastProvenance): string {
+  if (!provenance.baseline_engine) {
+    return "Baseline pending";
+  }
+  return provenance.baseline_engine === "pygnome" ? "Baseline PyGNOME" : "Baseline custom particle";
+}
+
+function modelLabel(provenance: ForecastProvenance): string {
+  if (!provenance.model_id || !provenance.model_architecture) {
+    return "Baseline-only forecast";
+  }
+  const scopeLabel = provenance.training_scope === "shared" ? "shared" : provenance.training_scope === "per_region" ? "regional" : null;
+  if (provenance.model_dataset_version) {
+    return `Model ${provenance.model_architecture} ${provenance.model_dataset_version}${scopeLabel ? ` (${scopeLabel})` : ""}`;
+  }
+  return `Model ${provenance.model_architecture}${scopeLabel ? ` (${scopeLabel})` : ""}`;
+}
+
 function confidenceBand(snapshot: ForecastSnapshot | null): string {
   if (!snapshot) {
     return "Unknown";
@@ -349,10 +367,10 @@ export function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">OceanRoute v1</p>
-          <h1>SF Bay debris response desk</h1>
+          <h1>Regional debris response desk</h1>
           <p className="hero-copy">
-            Tactical cleanup support for the next shift. Forecast probable debris concentration zones, see uncertainty,
-            and turn the best cells into a route or reconnaissance plan.
+            Tactical cleanup support for the next shift across the active pilot regions. Forecast probable debris
+            concentration zones, see uncertainty, and turn the best cells into a route or reconnaissance plan.
           </p>
         </div>
         <div className="hero-actions">
@@ -369,8 +387,8 @@ export function App() {
       <section className="summary-strip">
         <article className="summary-card">
           <span className="summary-label">Pilot region</span>
-          <strong>{health?.pilot_region ?? "sf_bay_estuary"}</strong>
-          <p>{loadingHealth ? "Checking backend status..." : "Single-region Bay operations mode."}</p>
+          <strong>{forecast?.region.name ?? health?.pilot_region ?? "sf_bay_estuary"}</strong>
+          <p>{loadingHealth ? "Checking backend status..." : "Active regional forecast workspace."}</p>
         </article>
         <article className="summary-card">
           <span className="summary-label">Top hotspot</span>
@@ -467,6 +485,8 @@ export function App() {
               <span className="status-pill trust-pill">
                 Generated {formatTimestamp(activeProvenance.generated_at)}
               </span>
+              <span className="status-pill trust-pill">{baselineLabel(activeProvenance)}</span>
+              <span className="status-pill trust-pill">{modelLabel(activeProvenance)}</span>
               <span className={`status-pill trust-pill ${activeProvenance.is_stale ? "trust-pill-stale" : ""}`}>
                 {activeProvenance.is_stale ? "stale" : "fresh"} within {activeProvenance.stale_after_minutes}m
               </span>
@@ -623,11 +643,16 @@ export function App() {
               <div className="route-sequence">
                 <h3>Forecast provenance</h3>
                 {routeProvenance ? (
-                  <p>
-                    {sourceLabel(routeProvenance)} | generated {formatTimestamp(routeProvenance.generated_at)} | h+
-                    {route.target_horizon_hour} | {route.forecast_is_stale ? "stale" : "fresh"} | confidence{" "}
-                    {confidenceBand(forecast)}
-                  </p>
+                  <div>
+                    <p>
+                      {sourceLabel(routeProvenance)} | generated {formatTimestamp(routeProvenance.generated_at)} | h+
+                      {route.target_horizon_hour} | {route.forecast_is_stale ? "stale" : "fresh"} | confidence{" "}
+                      {confidenceBand(forecast)}
+                    </p>
+                    <p>
+                      {baselineLabel(routeProvenance)} | {modelLabel(routeProvenance)}
+                    </p>
+                  </div>
                 ) : (
                   <p>Route was optimized from ad hoc candidates rather than a stored forecast run.</p>
                 )}

@@ -19,6 +19,7 @@ def _now() -> datetime:
 def seed_demo_scenario(db: Session) -> dict[str, object]:
     forecast = run_forecast(
         ForecastRunRequest(
+            region_id=settings.pilot_region,
             horizon_hours=48,
             debris_classes=["low", "high"],
             source_strength=1.1,
@@ -33,6 +34,7 @@ def seed_demo_scenario(db: Session) -> dict[str, object]:
 
     route = optimize_route(
         RouteOptimizeRequest(
+            region_id=settings.pilot_region,
             depot_lat=settings.default_depot_lat,
             depot_lon=settings.default_depot_lon,
             mission_hours=4.0,
@@ -88,6 +90,7 @@ def seed_demo_scenario(db: Session) -> dict[str, object]:
     benchmark = latest_benchmark_report(
         db,
         RouteOptimizeRequest(
+            region_id=settings.pilot_region,
             depot_lat=settings.default_depot_lat,
             depot_lon=settings.default_depot_lon,
             mission_hours=4.0,

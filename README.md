@@ -1,16 +1,20 @@
 # OceanRoute v1
 
-Regional floating-debris response support for the San Francisco Bay pilot. The stack is a FastAPI backend plus a React/Leaflet operator dashboard. Forecasts combine:
+Multi-region floating-debris response support with an SF Bay pilot workflow and a Stage 2 data/ML runtime. The stack is a FastAPI forecast API plus a separate FastAPI inference service and a React/Leaflet operator dashboard. Forecasts combine:
 
 - NOAA-style ingest with live-first plus sample fallback
-- deterministic drift baseline
-- residual correction and calibrated uncertainty
+- region-specific baseline grids and provenance
+- canonical baseline manifests with dual-write tensor artifacts
+- ensemble particle-advection baseline with windage, Stokes-drift proxy, diffusion, and beaching
+- residual correction, calibrated uncertainty, and optional active learned adjustment
+- dataset exports written as tensor artifacts plus sample indexes
 - single-vessel route optimization with recon fallback
-- mission feedback, impact ledger, and routing benchmark artifacts
+- mission feedback, impact ledger, routing benchmark artifacts, dataset builds, model registry entries, and inference-ready prediction artifacts
 
 ## Repo layout
 
-- `apps/api`: FastAPI app, Alembic-backed schema, forecast/routing/impact services, tests, CLI helpers
+- `apps/api`: FastAPI app, Alembic-backed schema, forecast/routing/impact/ML services, tests, CLI helpers
+- `apps/api/app/inference_main.py`: separate FastAPI inference entrypoint for promoted models
 - `apps/web`: Vite/React operator dashboard
 - `data`: exports and debug artifacts such as latest forecast, routes, and benchmark reports
 - `infra/windows`: scheduled forecast helpers for Windows ops
@@ -21,6 +25,7 @@ Regional floating-debris response support for the San Francisco Bay pilot. The s
 - Python 3.11
 - Docker Desktop with `docker compose`
 - Node `20.19.x`
+- optional ML environment for deep training/inference: `apps/api/requirements-ml.txt` plus a matching `torch` wheel
 
 The repo now enforces Node `20.19.x` with:
 
@@ -37,6 +42,15 @@ cd C:\Users\clewr\Catapult-2026
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r apps\api\requirements.txt
+```
+
+Optional deep-training environment:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\Activate.ps1
+pip install -r apps\api\requirements-ml.txt
+# install torch separately to match your CPU/CUDA setup
 ```
 
 2. Install frontend deps under Node `20.19.x`:
@@ -81,6 +95,13 @@ cd C:\Users\clewr\Catapult-2026
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps\api --reload
 ```
 
+Start the inference service in a second shell when you want the forecast API to call a separate runtime instead of the in-process fallback:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m uvicorn app.inference_main:app --app-dir apps\api --port 8100 --reload
+```
+
 Start the dashboard:
 
 ```powershell
@@ -106,6 +127,26 @@ cd C:\Users\clewr\Catapult-2026
 powershell -ExecutionPolicy Bypass -File infra\windows\register-forecast-task.ps1 -IntervalMinutes 60
 ```
 
+Run a different supported region from the CLI:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli run-forecast --region-id puget_sound --source-mode sample --horizon-hours 48
+```
+
+Backfill historical baseline artifacts for one region:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli backfill-history --region-id long_island_sound --source-mode sample --days 28
+```
+
+Supported built-in regions today:
+
+- `sf_bay_estuary`
+- `puget_sound`
+- `long_island_sound`
+
 ## Seeded mission walkthrough
 
 After running `scripts\seed-sample-data.ps1`, the canonical demo flow is already loaded into the DB. Open the UI and review:
@@ -117,6 +158,7 @@ After running `scripts\seed-sample-data.ps1`, the canonical demo flow is already
 
 Useful API endpoints for the walkthrough:
 
+- `GET /api/regions`
 - `GET /api/forecast/latest`
 - `GET /api/forecast/hotspots`
 - `POST /api/route/optimize`
@@ -127,6 +169,52 @@ Useful API endpoints for the walkthrough:
 - `GET /api/impact/benchmarks/latest`
 - `GET /api/export/geojson`
 - `GET /api/export/pdf-brief`
+
+ML and dataset endpoints:
+
+- `POST /api/ml/datasets/build`
+- `POST /api/ml/datasets/export`
+- `GET /api/ml/datasets`
+- `GET /api/ml/datasets/{dataset_id}`
+- `POST /api/ml/train`
+- `GET /api/ml/models`
+- `GET /api/ml/models/{model_id}/evaluate`
+- `GET /api/ml/models/{model_id}/export`
+- `POST /api/ml/models/{model_id}/promote`
+- `POST /api/forecast/backfill`
+
+CLI equivalents:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli build-dataset --region-id sf_bay_estuary --lookback-hours 12 --target-horizons 24 48 72
+.\.venv\Scripts\python.exe -m app.cli inspect-dataset --dataset-id <dataset-id>
+.\.venv\Scripts\python.exe -m app.cli train-model --region-id sf_bay_estuary --dataset-id <dataset-id> --architecture linear_residual
+.\.venv\Scripts\python.exe -m app.cli evaluate-model --model-id <model-id>
+.\.venv\Scripts\python.exe -m app.cli export-model --model-id <model-id>
+.\.venv\Scripts\python.exe -m app.cli promote-model --model-id <model-id>
+.\.venv\Scripts\python.exe -m app.cli list-ml --region-id sf_bay_estuary
+```
+
+Nested ML CLI:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli ml train --architecture convlstm --dataset-id <dataset-id> --regions sf_bay_estuary,puget_sound,long_island_sound --horizons 24,48,72 --training-scope shared --device auto --epochs 30 --batch-size 8 --promote-policy auto
+.\.venv\Scripts\python.exe -m app.cli ml evaluate --model-id <model-id>
+.\.venv\Scripts\python.exe -m app.cli ml export --model-id <model-id>
+.\.venv\Scripts\python.exe -m app.cli ml list --region-id sf_bay_estuary
+tensorboard --logdir data\training_runs
+```
+
+Current trainer behavior:
+
+- `linear_residual` remains the lightweight fallback trainer and can auto-promote as a per-region or shared fallback model
+- `temporal_unet` and `convlstm` now run through the offline deep-training package under `apps/api/app/ml/training/` and export inference-ready artifacts into `data\model_registry\`
+- deep-model training requires the separate ML environment plus a matching `torch` wheel; if those are missing, deep requests fail fast with a clear 400 instead of pretending to train
+- the nested `ml train` flow supports `shared`, `per_region`, and `both` scopes; `both` runs one shared job plus one per-region job per listed region
+- successful deep training writes TensorBoard logs, checkpoints, plots, an exported deployable artifact, and then registers the resulting model automatically
+- the forecast API records baseline engine, artifact provenance, model version, dataset version, and prediction artifact URI so the UI can surface trust metadata
 
 ## Verification
 
@@ -163,7 +251,12 @@ npm run build:web
 Seeded and scheduled runs write the latest artifacts into `data\`:
 
 - `data\forecasts\latest_forecast.json`
+- `data\data_lake\datasets\...`
+- `data\manifests\baseline\...`
+- `data\predictions\...`
 - `data\routes\latest_benchmark_report.json`
 - `data\routes\*.json`
+- `data\training_runs\...`
+- `data\model_registry\...`
 - `data\interim\latest_observation.json`
 - `data\interim\latest_mission_outcome.json`

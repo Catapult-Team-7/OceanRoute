@@ -48,6 +48,7 @@ def _candidate_score(candidate: RouteCandidate, request: RouteOptimizeRequest) -
 def _default_candidates(request: RouteOptimizeRequest, db: Session) -> tuple[ForecastSnapshot, list[RouteCandidate]]:
     snapshot = require_latest_forecast(
         db,
+        region_id=request.region_id,
         horizon_hour=request.target_horizon_hour,
         min_confidence=request.min_confidence,
     )
@@ -83,6 +84,7 @@ def _build_recon_plan(
     return RoutePlan(
         mission_id=str(uuid4()),
         created_at=_now(),
+        region_id=request.region_id or (forecast_snapshot.region.id if forecast_snapshot else None),
         vessel_id=request.vessel_id,
         recommended_mode="recon",
         target_horizon_hour=request.target_horizon_hour,
@@ -142,6 +144,7 @@ def _fallback_route(
     return RoutePlan(
         mission_id=str(uuid4()),
         created_at=_now(),
+        region_id=request.region_id or (forecast_snapshot.region.id if forecast_snapshot else None),
         vessel_id=request.vessel_id,
         recommended_mode="collection",
         target_horizon_hour=request.target_horizon_hour,
@@ -311,6 +314,7 @@ def _solve_with_ortools(
     return RoutePlan(
         mission_id=str(uuid4()),
         created_at=_now(),
+        region_id=request.region_id or (forecast_snapshot.region.id if forecast_snapshot else None),
         vessel_id=request.vessel_id,
         recommended_mode="collection",
         target_horizon_hour=request.target_horizon_hour,
@@ -339,6 +343,7 @@ def _persist_route(plan: RoutePlan, db: Session) -> RoutePlan:
             RoutePlanModel(
                 mission_id=plan.mission_id,
                 created_at=plan.created_at,
+                region_id=plan.region_id,
                 forecast_run_id=plan.forecast_run_id,
                 vessel_id=plan.vessel_id,
                 recommended_mode=plan.recommended_mode,
@@ -358,6 +363,7 @@ def _persist_route(plan: RoutePlan, db: Session) -> RoutePlan:
         )
     else:
         existing.created_at = plan.created_at
+        existing.region_id = plan.region_id
         existing.forecast_run_id = plan.forecast_run_id
         existing.vessel_id = plan.vessel_id
         existing.recommended_mode = plan.recommended_mode
@@ -426,11 +432,19 @@ def get_route(mission_id: str, db: Session) -> RoutePlan | None:
                 source_mode_used=linked_run.source_mode_used,
                 is_fallback=linked_run.is_fallback,
                 source_notes=list(linked_run.source_notes),
+                baseline_engine=str(linked_run.summary.get("baseline_engine")) if linked_run.summary.get("baseline_engine") else None,
+                baseline_artifact_uri=str(linked_run.summary.get("baseline_artifact_uri")) if linked_run.summary.get("baseline_artifact_uri") else None,
+                model_id=str(linked_run.summary.get("active_model_id")) if linked_run.summary.get("active_model_id") else None,
+                model_architecture=str(linked_run.summary.get("model_architecture")) if linked_run.summary.get("model_architecture") else None,
+                model_dataset_version=str(linked_run.summary.get("model_dataset_version")) if linked_run.summary.get("model_dataset_version") else None,
+                inference_service_version=str(linked_run.summary.get("inference_service_version")) if linked_run.summary.get("inference_service_version") else None,
+                prediction_artifact_uri=str(linked_run.summary.get("prediction_artifact_uri")) if linked_run.summary.get("prediction_artifact_uri") else None,
             )
             forecast_is_stale = forecast_provenance.is_stale
     return RoutePlan(
         mission_id=model.mission_id,
         created_at=model.created_at,
+        region_id=model.region_id,
         vessel_id=model.vessel_id,
         recommended_mode=model.recommended_mode,  # type: ignore[arg-type]
         target_horizon_hour=model.target_horizon_hour,

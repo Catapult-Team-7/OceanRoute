@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.ml.dataset_service import INPUT_CHANNELS
 from app.models import ForecastRunModel, ForecastStepModel, ObservationModel
 from app.schemas import (
     DEBRIS_CLASS_METADATA,
@@ -16,13 +19,18 @@ from app.schemas import (
     ForecastSnapshot,
     ForecastStep,
     HotspotSummary,
+    InferencePredictRequest,
     OperationalGridFrame,
     ResidualModelInput,
 )
 from app.services.artifact_service import write_latest_snapshot
+from app.services.baseline_runtime_service import latest_baseline_artifact, persist_baseline_artifact, run_baseline_diagnostics
+from app.services.data_lake_service import read_tensor, write_feature_snapshot
 from app.services.ingest_service import load_operational_context
-from app.services.physics_service import run_drift_baseline
+from app.services.inference_client_service import predict_with_inference_service
+from app.services.model_registry_service import apply_active_model_adjustments, get_active_model_entry
 from app.services.provenance_service import build_forecast_provenance
+from app.services.region_service import get_region_info
 from app.services.residual_model_service import apply_residual_correction
 from app.services.uncertainty_service import build_uncertainty
 
@@ -81,20 +89,129 @@ def _top_hotspots(steps: list[ForecastStep], limit: int = 8) -> list[HotspotSumm
     ]
 
 
-def _summary_for_steps(steps: list[ForecastStep], source_mode_used: str) -> dict[str, float | int | str]:
+def _summary_for_steps(
+    steps: list[ForecastStep],
+    source_mode_used: str,
+    active_model: dict[str, object] | None = None,
+    baseline_engine: str | None = None,
+) -> dict[str, float | int | str]:
     if not steps:
-        return {
+        summary: dict[str, float | int | str] = {
             "step_count": 0,
             "top_expected_kg_max": 0.0,
             "mean_confidence": 0.0,
             "source_mode_used": source_mode_used,
         }
-    return {
+        if baseline_engine:
+            summary["baseline_engine"] = baseline_engine
+        if active_model is not None and active_model.get("model_id"):
+            summary["active_model_id"] = str(active_model["model_id"])
+        if active_model is not None and active_model.get("training_scope"):
+            summary["training_scope"] = str(active_model["training_scope"])
+        return summary
+    summary = {
         "step_count": len(steps),
         "top_expected_kg_max": round(max(item.expected_kg_max for item in steps), 3),
         "mean_confidence": round(sum(item.confidence for item in steps) / len(steps), 4),
+        "mean_beaching_fraction": round(sum(item.beaching_fraction for item in steps) / len(steps), 4),
+        "max_ensemble_spread": round(max(item.ensemble_spread for item in steps), 4),
         "source_mode_used": source_mode_used,
     }
+    if baseline_engine:
+        summary["baseline_engine"] = baseline_engine
+    if active_model is not None and active_model.get("model_id"):
+        summary["active_model_id"] = str(active_model["model_id"])
+    if active_model is not None and active_model.get("training_scope"):
+        summary["training_scope"] = str(active_model["training_scope"])
+    return summary
+
+
+def _feature_tensor_from_baselines(run_id: str, debris_class: str, db: Session) -> tuple[str, str] | None:
+    lookback_artifacts = []
+    for hour in range(1, settings.training_lookback_hours + 1):
+        artifact = latest_baseline_artifact(db, run_id=run_id, debris_class=debris_class, horizon_hour=hour)
+        if artifact is None:
+            return None
+        lookback_artifacts.append(artifact)
+    template = lookback_artifacts[0]
+    shoreline_mask = read_tensor(template.grid_spec.shoreline_mask_uri) if template.grid_spec.shoreline_mask_uri else np.zeros((template.grid_spec.height, template.grid_spec.width), dtype=np.float32)
+    coastline_mask = shoreline_mask.astype(np.float32)
+    land_mask = (coastline_mask >= 0.7).astype(np.float32)
+    region_mask = np.ones_like(coastline_mask, dtype=np.float32)
+    windage = np.full_like(coastline_mask, 0.01 if debris_class == "low" else 0.025, dtype=np.float32)
+    frames = []
+    for artifact in lookback_artifacts:
+        frames.append(
+            np.stack(
+                [
+                    read_tensor(artifact.current_u_uri) if artifact.current_u_uri else np.zeros_like(shoreline_mask),
+                    read_tensor(artifact.current_v_uri) if artifact.current_v_uri else np.zeros_like(shoreline_mask),
+                    read_tensor(artifact.wind_u_uri) if artifact.wind_u_uri else np.zeros_like(shoreline_mask),
+                    read_tensor(artifact.wind_v_uri) if artifact.wind_v_uri else np.zeros_like(shoreline_mask),
+                    read_tensor(artifact.density_uri),
+                    read_tensor(artifact.ensemble_spread_uri),
+                    read_tensor(artifact.beaching_fraction_uri),
+                    read_tensor(artifact.stokes_magnitude_uri),
+                    windage,
+                    land_mask,
+                    coastline_mask,
+                    region_mask,
+                ],
+                axis=0,
+            ).astype(np.float32)
+        )
+    x_tensor = np.stack(frames, axis=0).astype(np.float32)
+    return write_feature_snapshot(
+        region_id=template.region_id,
+        forecast_run_id=run_id,
+        debris_class=debris_class,
+        generated_at=template.generated_at,
+        tensor=x_tensor,
+        metadata={
+            "input_channels": INPUT_CHANNELS,
+            "lookback_hours": settings.training_lookback_hours,
+            "baseline_artifact_ids": [artifact.artifact_id for artifact in lookback_artifacts],
+            "grid_spec": template.grid_spec.model_dump(mode="json"),
+        },
+    )
+
+
+def _apply_prediction_to_steps(
+    steps: list[ForecastStep],
+    *,
+    prediction_prob: np.ndarray,
+    prediction_kg: np.ndarray,
+    prediction_uncertainty: np.ndarray | None,
+    cell_map: dict[str, list[int]] | dict[str, tuple[int, int]],
+    target_horizon: int,
+    debris_class: str,
+) -> list[ForecastStep]:
+    updated: list[ForecastStep] = []
+    probability_slice = prediction_prob[0] if prediction_prob.ndim == 3 else prediction_prob
+    kg_slice = prediction_kg[0] if prediction_kg.ndim == 3 else prediction_kg
+    uncertainty_slice = None
+    if prediction_uncertainty is not None:
+        uncertainty_slice = prediction_uncertainty[0] if prediction_uncertainty.ndim == 3 else prediction_uncertainty
+    for step in steps:
+        if step.horizon_hour == target_horizon and step.debris_class == debris_class and step.cell_id in cell_map:
+            row, col = cell_map[step.cell_id]
+            probability = float(np.clip(probability_slice[row, col], 0.0, 1.0))
+            expected_mid = float(max(kg_slice[row, col], 0.0))
+            updated_uncertainty = step.uncertainty if uncertainty_slice is None else float(np.clip(uncertainty_slice[row, col], 0.0, 1.0))
+            updated.append(
+                step.model_copy(
+                    update={
+                        "probability": round(probability, 4),
+                        "expected_kg_min": round(max(0.0, expected_mid * 0.72), 3),
+                        "expected_kg_max": round(max(expected_mid * 0.72, expected_mid * 1.18), 3),
+                        "uncertainty": round(updated_uncertainty, 4),
+                        "confidence": round(max(0.0, 1.0 - updated_uncertainty), 4),
+                    }
+                )
+            )
+        else:
+            updated.append(step)
+    return updated
 
 
 def _step_from_model(model: ForecastStepModel) -> ForecastStep:
@@ -111,6 +228,12 @@ def _step_from_model(model: ForecastStepModel) -> ForecastStep:
         uncertainty=model.uncertainty,
         confidence=model.confidence,
         beaching_risk=model.beaching_risk,
+        baseline_density=model.baseline_density,
+        ensemble_spread=model.ensemble_spread,
+        beaching_fraction=model.beaching_fraction,
+        stokes_drift_u=model.stokes_drift_u,
+        stokes_drift_v=model.stokes_drift_v,
+        windage_fraction=model.windage_fraction,
         restricted=model.restricted,
     )
 
@@ -123,16 +246,47 @@ def _provenance_from_run(run: ForecastRunModel) -> ForecastProvenance:
         source_mode_used=run.source_mode_used,
         is_fallback=run.is_fallback,
         source_notes=list(run.source_notes),
+        baseline_engine=str(run.summary.get("baseline_engine")) if run.summary.get("baseline_engine") else None,
+        baseline_artifact_uri=str(run.summary.get("baseline_artifact_uri")) if run.summary.get("baseline_artifact_uri") else None,
+        model_id=str(run.summary.get("active_model_id")) if run.summary.get("active_model_id") else None,
+        model_architecture=str(run.summary.get("model_architecture")) if run.summary.get("model_architecture") else None,
+        model_dataset_version=str(run.summary.get("model_dataset_version")) if run.summary.get("model_dataset_version") else None,
+        training_scope=str(run.summary.get("training_scope")) if run.summary.get("training_scope") else None,
+        inference_service_version=str(run.summary.get("inference_service_version")) if run.summary.get("inference_service_version") else None,
+        prediction_artifact_uri=str(run.summary.get("prediction_artifact_uri")) if run.summary.get("prediction_artifact_uri") else None,
     )
 
 
 def _snapshot_from_run(run: ForecastRunModel, steps: list[ForecastStep]) -> ForecastSnapshot:
     provenance = _provenance_from_run(run)
+    summary = _summary_for_steps(
+        steps,
+        run.source_mode_used,
+        {
+            "model_id": run.summary.get("active_model_id"),
+            "training_scope": run.summary.get("training_scope"),
+        }
+        if run.summary.get("active_model_id")
+        else None,
+        baseline_engine=str(run.summary.get("baseline_engine")) if run.summary.get("baseline_engine") else None,
+    )
+    for key in (
+        "active_model_id",
+        "model_architecture",
+        "model_dataset_version",
+        "training_scope",
+        "prediction_artifact_uri",
+        "inference_service_version",
+        "baseline_artifact_uri",
+    ):
+        if run.summary.get(key):
+            summary[key] = str(run.summary[key])
     return ForecastSnapshot(
         run_id=run.id,
         generated_at=run.generated_at,
         horizon_hours=run.horizon_hours,
         pilot_region=run.pilot_region,
+        region=get_region_info(run.pilot_region),
         source_mode_requested=run.source_mode_requested,  # type: ignore[arg-type]
         source_mode_used=run.source_mode_used,  # type: ignore[arg-type]
         is_fallback=run.is_fallback,
@@ -152,19 +306,29 @@ def _snapshot_from_run(run: ForecastRunModel, steps: list[ForecastStep]) -> Fore
         steps=steps,
         top_hotspots=_top_hotspots(steps),
         provenance=provenance,
-        summary=_summary_for_steps(steps, run.source_mode_used),
+        summary=summary,
     )
 
 
-def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunResponse:
+def run_forecast(
+    request: ForecastRunRequest,
+    db: Session,
+    *,
+    generated_at_override: datetime | None = None,
+) -> ForecastRunResponse:
     context = load_operational_context(
         horizon_hours=request.horizon_hours,
         seed=request.seed,
         source_mode=request.source_mode,
+        region_id=request.region_id,
+        generated_at_override=generated_at_override,
     )
     run_id = str(uuid4())
-    step_models: list[ForecastStepModel] = []
     steps: list[ForecastStep] = []
+    baseline_artifacts: dict[tuple[str, int], str] = {}
+    active_model_entry = get_active_model_entry(db, context.region.id)
+    active_model_payload: dict[str, object] | None = None
+    selected_baseline_engine: str | None = None
 
     for frame in context.frames:
         history_bias = _history_bias(frame, db)
@@ -182,17 +346,41 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
                 source_strength=request.source_strength,
                 grid=frame.grid,
             )
-            baseline = run_drift_baseline(baseline_input)
+            baseline_engine, baseline = run_baseline_diagnostics(baseline_input)
+            selected_baseline_engine = baseline_engine
+            artifact = persist_baseline_artifact(
+                db=db,
+                region_id=context.region.id,
+                region_name=context.region.name,
+                run_id=run_id,
+                debris_class=debris_class,
+                generated_at=context.generated_at,
+                forecast_valid_at=frame.valid_at,
+                horizon_hour=frame.horizon_hour,
+                source_mode_requested=context.source_mode_requested,
+                source_mode_used=context.source_mode_used,
+                is_fallback=context.is_fallback,
+                source_notes=context.source_notes,
+                baseline_engine=baseline_engine,
+                current_u_by_cell={point.cell_id: point.current_u for point in frame.grid},
+                current_v_by_cell={point.cell_id: point.current_v for point in frame.grid},
+                wind_u_by_cell={point.cell_id: point.wind_u for point in frame.grid},
+                wind_v_by_cell={point.cell_id: point.wind_v for point in frame.grid},
+                diagnostics=baseline,
+            )
+            baseline_artifacts[(debris_class, frame.horizon_hour)] = artifact.manifest_uri
             corrected = apply_residual_correction(
                 ResidualModelInput(
                     run_id=run_id,
                     debris_class=debris_class,
                     horizon_hour=frame.horizon_hour,
-                    baseline_density=baseline,
+                    baseline_density=baseline.density,
                     currents=currents,
                     winds=winds,
                     history_bias=history_bias,
                     shoreline=shoreline,
+                    ensemble_spread=baseline.ensemble_spread,
+                    beaching_fraction=baseline.beaching_fraction,
                 )
             )
             uncertainty, confidence = build_uncertainty(
@@ -200,6 +388,8 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
                 corrected,
                 horizon_hour=frame.horizon_hour,
                 source_mode_used=context.source_mode_used,
+                ensemble_spread=baseline.ensemble_spread,
+                beaching_fraction=baseline.beaching_fraction,
             )
             max_density = max(corrected.values()) if corrected else 1.0
             kg_min_multiplier, kg_max_multiplier = _class_weight_range(debris_class)
@@ -221,31 +411,109 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
                     expected_kg_max=round(max(expected_kg_min, expected_kg_max), 3),
                     uncertainty=uncertainty[point.cell_id],
                     confidence=confidence[point.cell_id],
-                    beaching_risk=round(min(1.0, point.shoreline_proximity * 0.72), 4),
+                    beaching_risk=round(min(1.0, (point.shoreline_proximity * 0.6) + (baseline.beaching_fraction[point.cell_id] * 0.4)), 4),
+                    baseline_density=baseline.density[point.cell_id],
+                    ensemble_spread=baseline.ensemble_spread[point.cell_id],
+                    beaching_fraction=baseline.beaching_fraction[point.cell_id],
+                    stokes_drift_u=round(baseline.stokes_drift[point.cell_id][0], 4),
+                    stokes_drift_v=round(baseline.stokes_drift[point.cell_id][1], 4),
+                    windage_fraction=baseline.windage_fraction,
                     restricted=point.restricted,
                 )
                 steps.append(step)
-                step_models.append(
-                    ForecastStepModel(
-                        run_id=run_id,
-                        valid_at=step.valid_at,
-                        horizon_hour=step.horizon_hour,
-                        cell_id=step.cell_id,
-                        lat=step.lat,
-                        lon=step.lon,
-                        debris_class=step.debris_class,
-                        probability=step.probability,
-                        expected_kg_min=step.expected_kg_min,
-                        expected_kg_max=step.expected_kg_max,
-                        uncertainty=step.uncertainty,
-                        confidence=step.confidence,
-                        beaching_risk=step.beaching_risk,
-                        restricted=step.restricted,
-                    )
+
+    prediction_artifact_uri: str | None = None
+    inference_service_version: str | None = None
+    if active_model_entry is not None and active_model_entry.architecture in {"temporal_unet", "convlstm"}:
+        for debris_class in request.debris_classes:
+            feature_bundle = _feature_tensor_from_baselines(run_id, debris_class, db)
+            if feature_bundle is None:
+                continue
+            feature_artifact_uri, _ = feature_bundle
+            try:
+                prediction = predict_with_inference_service(
+                    InferencePredictRequest(
+                        region_id=context.region.id,
+                        forecast_run_id=run_id,
+                        debris_class=debris_class,
+                        feature_artifact_uri=feature_artifact_uri,
+                        model_id=active_model_entry.model_id,
+                        target_horizons=[24, 48, 72],
+                    ),
+                    db,
                 )
+                prediction_prob = read_tensor(prediction.artifact.hotspot_probability_uri)
+                prediction_kg = read_tensor(prediction.artifact.expected_kg_uri)
+                prediction_uncertainty = read_tensor(prediction.artifact.uncertainty_uri) if prediction.artifact.uncertainty_uri else None
+                horizon_lookup = {horizon: index for index, horizon in enumerate(prediction.artifact.target_horizons)}
+                for target_horizon in prediction.artifact.target_horizons:
+                    baseline_artifact = latest_baseline_artifact(db, run_id=run_id, debris_class=debris_class, horizon_hour=target_horizon)
+                    if baseline_artifact is None:
+                        continue
+                    horizon_index = horizon_lookup[target_horizon]
+                    steps = _apply_prediction_to_steps(
+                        steps,
+                        prediction_prob=prediction_prob[horizon_index],
+                        prediction_kg=prediction_kg[horizon_index],
+                        prediction_uncertainty=None if prediction_uncertainty is None else prediction_uncertainty[horizon_index],
+                        cell_map=baseline_artifact.metadata.get("cell_map", {}),
+                        target_horizon=target_horizon,
+                        debris_class=debris_class,
+                    )
+                prediction_artifact_uri = prediction.artifact.manifest_uri
+                inference_service_version = prediction.artifact.inference_service_version
+                active_model_payload = {
+                    "model_id": prediction.loaded_model_id,
+                    "architecture": active_model_entry.architecture,
+                    "dataset_version": active_model_entry.dataset_version or settings.dataset_version,
+                    "training_scope": prediction.artifact.training_scope or active_model_entry.training_scope,
+                }
+            except Exception:
+                continue
+
+    steps, linear_payload = apply_active_model_adjustments(steps, context.region.id, db)
+    if active_model_payload is None:
+        active_model_payload = linear_payload
+    step_models = [
+        ForecastStepModel(
+            run_id=run_id,
+            valid_at=step.valid_at,
+            horizon_hour=step.horizon_hour,
+            cell_id=step.cell_id,
+            lat=step.lat,
+            lon=step.lon,
+            debris_class=step.debris_class,
+            probability=step.probability,
+            expected_kg_min=step.expected_kg_min,
+            expected_kg_max=step.expected_kg_max,
+            uncertainty=step.uncertainty,
+            confidence=step.confidence,
+            beaching_risk=step.beaching_risk,
+            baseline_density=step.baseline_density,
+            ensemble_spread=step.ensemble_spread,
+            beaching_fraction=step.beaching_fraction,
+            stokes_drift_u=step.stokes_drift_u,
+            stokes_drift_v=step.stokes_drift_v,
+            windage_fraction=step.windage_fraction,
+            restricted=step.restricted,
+        )
+        for step in steps
+    ]
 
     top_hotspots = _top_hotspots(steps)
-    summary = _summary_for_steps(steps, context.source_mode_used)
+    summary = _summary_for_steps(steps, context.source_mode_used, active_model_payload, selected_baseline_engine)
+    if baseline_artifacts:
+        summary["baseline_artifact_uri"] = next(iter(baseline_artifacts.values()))
+    if active_model_payload and active_model_payload.get("architecture"):
+        summary["model_architecture"] = str(active_model_payload["architecture"])
+    if active_model_payload and active_model_payload.get("dataset_version"):
+        summary["model_dataset_version"] = str(active_model_payload["dataset_version"])
+    if active_model_payload and active_model_payload.get("training_scope"):
+        summary["training_scope"] = str(active_model_payload["training_scope"])
+    if prediction_artifact_uri:
+        summary["prediction_artifact_uri"] = prediction_artifact_uri
+    if inference_service_version:
+        summary["inference_service_version"] = inference_service_version
 
     db.add(
         ForecastRunModel(
@@ -270,12 +538,21 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
         source_mode_used=context.source_mode_used,
         is_fallback=context.is_fallback,
         source_notes=context.source_notes,
+        baseline_engine=selected_baseline_engine,
+        baseline_artifact_uri=next(iter(baseline_artifacts.values())) if baseline_artifacts else None,
+        model_id=str(active_model_payload["model_id"]) if active_model_payload and active_model_payload.get("model_id") else None,
+        model_architecture=str(active_model_payload["architecture"]) if active_model_payload and active_model_payload.get("architecture") else None,
+        model_dataset_version=str(active_model_payload["dataset_version"]) if active_model_payload and active_model_payload.get("dataset_version") else None,
+        training_scope=str(active_model_payload["training_scope"]) if active_model_payload and active_model_payload.get("training_scope") else None,
+        inference_service_version=inference_service_version,
+        prediction_artifact_uri=prediction_artifact_uri,
     )
     snapshot = ForecastSnapshot(
         run_id=run_id,
         generated_at=context.generated_at,
         horizon_hours=request.horizon_hours,
         pilot_region=context.pilot_region,
+        region=context.region,
         source_mode_requested=context.source_mode_requested,
         source_mode_used=context.source_mode_used,
         is_fallback=context.is_fallback,
@@ -302,6 +579,7 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
         run_id=run_id,
         generated_at=context.generated_at,
         horizon_hours=request.horizon_hours,
+        region=context.region,
         source_mode_requested=context.source_mode_requested,
         source_mode_used=context.source_mode_used,
         is_fallback=context.is_fallback,
@@ -318,13 +596,15 @@ def run_forecast(request: ForecastRunRequest, db: Session) -> ForecastRunRespons
 def latest_forecast(
     db: Session,
     *,
+    region_id: str | None = None,
     horizon_hour: int | None = None,
     debris_class: str | None = None,
     min_confidence: float = 0.0,
 ) -> ForecastSnapshot | None:
-    run = db.execute(
-        select(ForecastRunModel).order_by(ForecastRunModel.generated_at.desc()).limit(1)
-    ).scalar_one_or_none()
+    run_query = select(ForecastRunModel)
+    if region_id is not None:
+        run_query = run_query.where(ForecastRunModel.pilot_region == region_id)
+    run = db.execute(run_query.order_by(ForecastRunModel.generated_at.desc()).limit(1)).scalar_one_or_none()
     if run is None:
         return None
 
@@ -346,18 +626,21 @@ def latest_forecast(
 def require_latest_forecast(
     db: Session,
     *,
+    region_id: str | None = None,
     horizon_hour: int | None = None,
     debris_class: str | None = None,
     min_confidence: float = 0.0,
 ) -> ForecastSnapshot:
     snapshot = latest_forecast(
         db,
+        region_id=region_id,
         horizon_hour=horizon_hour,
         debris_class=debris_class,
         min_confidence=min_confidence,
     )
     if snapshot is None:
+        requested_region = region_id or settings.pilot_region
         raise LookupError(
-            f"No forecast has been generated yet for pilot region {settings.pilot_region}. Run /forecast/run first."
+            f"No forecast has been generated yet for region {requested_region}. Run /forecast/run first."
         )
     return snapshot

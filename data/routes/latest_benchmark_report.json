@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-04-04T18:18:51.428202Z",
-  "forecast_run_id": "94d319ff-4b89-421b-8541-fc6fcea03d7f",
+  "generated_at": "2026-04-04T18:32:34.211230Z",
+  "forecast_run_id": "c24ee55b-b42b-4884-958f-b0a8cba42785",
   "target_horizon_hour": 24,
   "compared_strategies": [
     {
@@ -15,50 +15,41 @@
         "central_bay:low",
         "richmond_shoal:high"
       ],
-      "expected_kg_min": 22.687,
-      "expected_kg_max": 63.295,
+      "expected_kg_min": 19.103,
+      "expected_kg_max": 54.428,
       "expected_distance_km": 43.076,
-      "uncertainty_penalty": 2.63,
-      "hotspot_hit_rate_estimate": 0.5616,
-      "objective_score": 10.157
+      "uncertainty_penalty": 2.752,
+      "hotspot_hit_rate_estimate": 0.5414,
+      "objective_score": 3.81
     },
     {
       "strategy": "highest_yield",
-      "recommended_mode": "collection",
-      "ordered_cell_ids": [
-        "golden_gate:high",
-        "angel_island:high",
-        "central_bay:high",
-        "oakland_approach:high",
-        "berkeley_marina:high",
-        "golden_gate:low"
-      ],
-      "expected_kg_min": 21.659,
-      "expected_kg_max": 60.746,
-      "expected_distance_km": 48.526,
-      "uncertainty_penalty": 2.677,
-      "hotspot_hit_rate_estimate": 0.5539,
-      "objective_score": 6.989
+      "recommended_mode": "recon",
+      "ordered_cell_ids": [],
+      "expected_kg_min": 0.0,
+      "expected_kg_max": 0.0,
+      "expected_distance_km": 0.0,
+      "uncertainty_penalty": 2.703,
+      "hotspot_hit_rate_estimate": 0.5496,
+      "objective_score": -1.019
     },
     {
       "strategy": "recon_aware",
       "recommended_mode": "collection",
       "ordered_cell_ids": [
-        "golden_gate:low",
-        "golden_gate:high",
+        "central_bay:high",
+        "central_bay:low",
         "angel_island:low",
         "angel_island:high",
-        "berkeley_marina:high",
-        "oakland_approach:high",
-        "central_bay:high",
-        "central_bay:low"
+        "golden_gate:low",
+        "golden_gate:high"
       ],
-      "expected_kg_min": 26.439,
-      "expected_kg_max": 74.02,
-      "expected_distance_km": 42.869,
-      "uncertainty_penalty": 2.646,
-      "hotspot_hit_rate_estimate": 0.559,
-      "objective_score": 16.161
+      "expected_kg_min": 16.951,
+      "expected_kg_max": 47.915,
+      "expected_distance_km": 23.46,
+      "uncertainty_penalty": 2.702,
+      "hotspot_hit_rate_estimate": 0.5496,
+      "objective_score": 10.393
     }
   ],
   "winning_strategy": "recon_aware"

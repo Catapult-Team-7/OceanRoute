@@ -1,0 +1,21 @@
+{
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=wind&application=OceanRoute&date=latest&station=9414750&time_zone=gmt&units=metric&format=json",
+  "payload": {
+    "metadata": {
+      "id": "9414750",
+      "name": "Alameda",
+      "lat": "37.772",
+      "lon": "-122.3003"
+    },
+    "data": [
+      {
+        "t": "2026-04-04 18:30",
+        "s": "2.2",
+        "d": "245.0",
+        "dr": "WSW",
+        "g": "2.5",
+        "f": "0,0"
+      }
+    ]
+  }
+}

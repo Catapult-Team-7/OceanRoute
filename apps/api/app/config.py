@@ -42,6 +42,15 @@ class Settings:
     default_depot_lon: float
     vessel_speed_kmh: float
     write_debug_artifacts: bool
+    baseline_engine_preference: str
+    inference_service_url: str
+    inference_service_timeout_seconds: float
+    training_lookback_hours: int
+    historical_backfill_days: int
+    baseline_schema_version: str
+    feature_schema_version: str
+    label_schema_version: str
+    dataset_version: str
 
 
 def load_settings() -> Settings:
@@ -66,6 +75,15 @@ def load_settings() -> Settings:
         default_depot_lon=float(os.getenv("OCEANROUTE_DEFAULT_DEPOT_LON", "-122.4659")),
         vessel_speed_kmh=float(os.getenv("OCEANROUTE_VESSEL_SPEED_KMH", "18.0")),
         write_debug_artifacts=_env_bool("OCEANROUTE_WRITE_DEBUG_ARTIFACTS", True),
+        baseline_engine_preference=os.getenv("OCEANROUTE_BASELINE_ENGINE", "auto"),
+        inference_service_url=os.getenv("OCEANROUTE_INFERENCE_SERVICE_URL", "http://127.0.0.1:8100"),
+        inference_service_timeout_seconds=float(os.getenv("OCEANROUTE_INFERENCE_TIMEOUT_SECONDS", "5")),
+        training_lookback_hours=int(os.getenv("OCEANROUTE_TRAINING_LOOKBACK_HOURS", "12")),
+        historical_backfill_days=int(os.getenv("OCEANROUTE_HISTORICAL_BACKFILL_DAYS", "180")),
+        baseline_schema_version=os.getenv("OCEANROUTE_BASELINE_SCHEMA_VERSION", "v2"),
+        feature_schema_version=os.getenv("OCEANROUTE_FEATURE_SCHEMA_VERSION", "v2"),
+        label_schema_version=os.getenv("OCEANROUTE_LABEL_SCHEMA_VERSION", "v2"),
+        dataset_version=os.getenv("OCEANROUTE_DATASET_VERSION", "v2"),
     )
 
 

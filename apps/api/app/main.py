@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import init_db
-from app.routers import exports, forecast, operations, routing
+from app.routers import exports, forecast, ml, operations, regions, routing
 from app.services.artifact_service import ensure_data_directories
 from app.services.scheduler_service import APSCHEDULER_AVAILABLE, start_scheduler, stop_scheduler
 
@@ -25,7 +25,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version="2.0.0",
-    description="Regional floating-debris response decision support system for the SF Bay pilot.",
+    description="Multi-region floating-debris response decision support system with hybrid forecasting and trainable ML scaffolding.",
     lifespan=lifespan,
 )
 
@@ -56,3 +56,5 @@ app.include_router(forecast.router, prefix=settings.api_prefix)
 app.include_router(routing.router, prefix=settings.api_prefix)
 app.include_router(operations.router, prefix=settings.api_prefix)
 app.include_router(exports.router, prefix=settings.api_prefix)
+app.include_router(regions.router, prefix=settings.api_prefix)
+app.include_router(ml.router, prefix=settings.api_prefix)

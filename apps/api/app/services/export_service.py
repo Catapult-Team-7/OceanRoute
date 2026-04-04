@@ -8,6 +8,8 @@ def forecast_to_geojson(snapshot: ForecastSnapshot) -> dict[str, object]:
         "type": "FeatureCollection",
         "metadata": {
             "run_id": snapshot.run_id,
+            "region_id": snapshot.region.id,
+            "region_name": snapshot.region.name,
             "generated_at": snapshot.generated_at.isoformat(),
             "horizon_hours": snapshot.horizon_hours,
             "source_mode_requested": snapshot.source_mode_requested,
@@ -27,6 +29,12 @@ def forecast_to_geojson(snapshot: ForecastSnapshot) -> dict[str, object]:
                     "valid_at": item.valid_at.isoformat(),
                     "horizon_hour": item.horizon_hour,
                     "probability": item.probability,
+                    "baseline_density": item.baseline_density,
+                    "ensemble_spread": item.ensemble_spread,
+                    "beaching_fraction": item.beaching_fraction,
+                    "stokes_drift_u": item.stokes_drift_u,
+                    "stokes_drift_v": item.stokes_drift_v,
+                    "windage_fraction": item.windage_fraction,
                     "expected_kg_min": item.expected_kg_min,
                     "expected_kg_max": item.expected_kg_max,
                     "confidence": item.confidence,
@@ -49,7 +57,7 @@ def build_pdf_brief_bytes(snapshot: ForecastSnapshot) -> bytes:
     text = (
         f"OceanRoute Mission Brief\\n"
         f"Run: {snapshot.run_id}\\n"
-        f"Region: {snapshot.pilot_region}\\n"
+        f"Region: {snapshot.region.name} ({snapshot.pilot_region})\\n"
         f"Generated: {snapshot.generated_at.isoformat()}\\n"
         f"Horizon: {snapshot.horizon_hours}h\\n"
         f"Source: {snapshot.source_mode_requested}->{snapshot.source_mode_used}\\n"

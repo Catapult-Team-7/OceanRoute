@@ -136,6 +136,7 @@ def latest_benchmark_report(db: Session, request: RouteOptimizeRequest) -> Routi
     winning = max(compared, key=lambda item: item.objective_score)
     report = RoutingBenchmarkReport(
         generated_at=_now(),
+        region_id=snapshot.region.id,
         forecast_run_id=snapshot.run_id,
         target_horizon_hour=request.target_horizon_hour,
         compared_strategies=compared,

@@ -6,7 +6,20 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Base, FeedbackEventModel, ForecastRunModel, ForecastStepModel, MissionOutcomeModel, ObservationModel, RoutePlanModel
+from app.models import (
+    Base,
+    BaselineArtifactModel,
+    DatasetArtifactModel,
+    FeedbackEventModel,
+    ForecastRunModel,
+    ForecastStepModel,
+    MissionOutcomeModel,
+    ModelRegistryModel,
+    ObservationModel,
+    PredictionArtifactModel,
+    RoutePlanModel,
+    TrainingRunModel,
+)
 
 
 def _engine_kwargs() -> dict[str, object]:
@@ -30,6 +43,11 @@ def init_db() -> None:
         ObservationModel.__tablename__,
         MissionOutcomeModel.__tablename__,
         FeedbackEventModel.__tablename__,
+        BaselineArtifactModel.__tablename__,
+        DatasetArtifactModel.__tablename__,
+        ModelRegistryModel.__tablename__,
+        PredictionArtifactModel.__tablename__,
+        TrainingRunModel.__tablename__,
     }
     missing_tables = sorted(required_tables - existing_tables)
     if missing_tables:

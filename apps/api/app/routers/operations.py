@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -8,6 +8,7 @@ from app.db import get_db
 from app.schemas import ImpactDashboard, MissionOutcome, ObservationUpload, RouteOptimizeRequest, RoutingBenchmarkReport
 from app.services.benchmark_service import latest_benchmark_report
 from app.services.impact_service import add_observation, impact_dashboard, log_mission_outcome
+from app.services.region_service import get_region_definition
 
 router = APIRouter(tags=["operations"])
 
@@ -28,12 +29,14 @@ def impact_dashboard_endpoint(db: Session = Depends(get_db)) -> ImpactDashboard:
 
 
 @router.get("/impact/benchmarks/latest", response_model=RoutingBenchmarkReport)
-def latest_benchmark_endpoint(db: Session = Depends(get_db)) -> RoutingBenchmarkReport:
+def latest_benchmark_endpoint(region_id: str | None = Query(default=None), db: Session = Depends(get_db)) -> RoutingBenchmarkReport:
+    region = get_region_definition(region_id)
     return latest_benchmark_report(
         db,
         RouteOptimizeRequest(
-            depot_lat=settings.default_depot_lat,
-            depot_lon=settings.default_depot_lon,
+            region_id=region.id,
+            depot_lat=region.default_depot_lat,
+            depot_lon=region.default_depot_lon,
             mission_hours=4.0,
             vessel_speed_kmh=settings.vessel_speed_kmh,
             fuel_burn_lph=12.0,

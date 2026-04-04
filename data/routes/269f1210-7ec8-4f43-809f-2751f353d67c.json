@@ -1,0 +1,90 @@
+{
+  "mission_id": "269f1210-7ec8-4f43-809f-2751f353d67c",
+  "created_at": "2026-04-04T18:32:31.117999Z",
+  "vessel_id": "sf-bay-pilot-vessel",
+  "recommended_mode": "collection",
+  "target_horizon_hour": 24,
+  "ordered_cell_ids": [
+    "central_bay:high",
+    "central_bay:low",
+    "angel_island:low",
+    "angel_island:high",
+    "golden_gate:low",
+    "golden_gate:high"
+  ],
+  "expected_kg_min": 16.951,
+  "expected_kg_max": 47.915,
+  "expected_distance_km": 23.46,
+  "expected_duration_min": 150.2,
+  "estimated_fuel_liters": 30.04,
+  "objective_score": 10.393,
+  "legs": [
+    {
+      "from_cell": "depot",
+      "to_cell": "central_bay:high",
+      "distance_km": 7.995,
+      "travel_minutes": 26.65
+    },
+    {
+      "from_cell": "central_bay:high",
+      "to_cell": "central_bay:low",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "central_bay:low",
+      "to_cell": "angel_island:low",
+      "distance_km": 7.365,
+      "travel_minutes": 24.55
+    },
+    {
+      "from_cell": "angel_island:low",
+      "to_cell": "angel_island:high",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "angel_island:high",
+      "to_cell": "golden_gate:low",
+      "distance_km": 7.282,
+      "travel_minutes": 24.27
+    },
+    {
+      "from_cell": "golden_gate:low",
+      "to_cell": "golden_gate:high",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "golden_gate:high",
+      "to_cell": "depot",
+      "distance_km": 0.819,
+      "travel_minutes": 2.73
+    }
+  ],
+  "uncertainty_risk": 0.4504,
+  "alternates": [
+    "oakland_approach:high",
+    "north_bay:high",
+    "alameda_corridor:high"
+  ],
+  "forecast_run_id": "c24ee55b-b42b-4884-958f-b0a8cba42785",
+  "forecast_provenance": {
+    "generated_at": "2026-04-04T18:00:00Z",
+    "horizon_hours": 48,
+    "source_mode_requested": "sample",
+    "source_mode_used": "sample",
+    "is_fallback": false,
+    "is_stale": false,
+    "age_minutes": 32,
+    "stale_after_minutes": 180,
+    "source_notes": [
+      "Using deterministic SF Bay NOAA-style fixture data."
+    ]
+  },
+  "forecast_is_stale": false,
+  "metadata": {
+    "solver": "ortools",
+    "candidate_count": 18
+  }
+}

@@ -20,6 +20,9 @@ __pycache__
 apps/web/.turbo
 apps/web/dist
 apps/api/tests/test-data
+apps/api/tests/test-data-debug*/
+apps/api/tests/tmp_debug.db
+apps/api/tests/test_oceanroute_debug*.db
 apps/api/tests/test_oceanroute.db
 *.db
 *.sqlite3

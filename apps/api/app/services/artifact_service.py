@@ -13,7 +13,7 @@ def _now_stamp() -> str:
 
 
 def ensure_data_directories() -> None:
-    for subdir in ["raw", "interim", "features", "forecasts", "routes"]:
+    for subdir in ["raw", "interim", "features", "forecasts", "routes", "datasets", "models"]:
         (settings.data_root / subdir).mkdir(parents=True, exist_ok=True)
 
 

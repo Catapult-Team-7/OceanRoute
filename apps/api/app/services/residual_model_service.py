@@ -11,6 +11,8 @@ def apply_residual_correction(payload: ResidualModelInput) -> dict[str, float]:
         wind_u, wind_v = payload.winds[cell_id]
         history = payload.history_bias.get(cell_id, 0.0)
         shoreline = payload.shoreline.get(cell_id, 0.0)
+        spread = payload.ensemble_spread.get(cell_id, 0.0)
+        beaching = payload.beaching_fraction.get(cell_id, 0.0)
         residual = (
             (wind_u * 0.065)
             + (wind_v * 0.055)
@@ -18,6 +20,8 @@ def apply_residual_correction(payload: ResidualModelInput) -> dict[str, float]:
             + (current_v * 0.03)
             + (history * 0.28)
             + (shoreline * 0.06)
+            + (beaching * 0.18)
+            - (spread * 0.12)
             - horizon_penalty
         )
         corrected[cell_id] = max(0.0, round(base + residual, 4))
