@@ -1,0 +1,36 @@
+import { create } from "zustand";
+
+function monthString(date) {
+  return date.toISOString().slice(0, 7);
+}
+
+export const useOceanStore = create((set) => ({
+  currentView: "mission",
+  selectedDate: monthString(new Date()),
+  selectedPoint: null,
+  selectedRegion: "global",
+  heatmapData: null,
+  anomalies: [],
+  forecast: null,
+  history: [],
+  globalStats: { meanFlux: null, sinkCoverage: null, strongestSink: null },
+  isLoading: false,
+  wsConnected: false,
+  setCurrentView: (currentView) => set({ currentView }),
+  setSelectedDate: (selectedDate) => set({ selectedDate }),
+  setSelectedPoint: (selectedPoint) => set({ selectedPoint }),
+  setSelectedRegion: (selectedRegion) => set({ selectedRegion }),
+  setHeatmapData: (heatmapData) =>
+    set({
+      heatmapData,
+      globalStats: {
+        meanFlux: heatmapData?.metadata?.mean_flux ?? null,
+        sinkCoverage: heatmapData?.metadata?.sink_area_pct ?? null,
+      },
+    }),
+  setAnomalies: (anomalies) => set({ anomalies }),
+  setForecast: (forecast) => set({ forecast }),
+  setHistory: (history) => set({ history }),
+  setWsConnected: (wsConnected) => set({ wsConnected }),
+  setLoading: (isLoading) => set({ isLoading }),
+}));
