@@ -9,8 +9,11 @@ from ingest.fetch_copernicus import (
     CopernicusSyncError,
     default_copernicus_directory,
     parse_copernicus_notes,
+    resolve_copernicus_output_directory,
     resolve_copernicus_credentials,
-    sync_copernicus_monthly_training,
+    sync_copernicus_currents,
+    sync_copernicus_salinity,
+    sync_copernicus_temperature,
 )
 from ingest.real_training_data import (
     DEFAULT_NOAA_GML_CO2_URL,
@@ -29,6 +32,35 @@ if TYPE_CHECKING:
 class DataConnectorService:
     def __init__(self, trainer: "MLTrainerService"):
         self.trainer = trainer
+
+    def _set_progress_state(self, *, stage: str, detail: str, progress: float | None = None):
+        lock = getattr(self.trainer, "_lock", None)
+        state = getattr(self.trainer, "state", None)
+        if lock is None or state is None:
+            return
+        with lock:
+            state.metrics = {
+                **getattr(state, "metrics", {}),
+                "stage": stage,
+                "detail": detail,
+            }
+            if progress is not None:
+                state.progress = progress
+
+    def _set_download_progress(self, *, completed: int, total: int, current: str):
+        lock = getattr(self.trainer, "_lock", None)
+        state = getattr(self.trainer, "state", None)
+        if lock is None or state is None:
+            return
+        with lock:
+            state.metrics = {
+                **getattr(state, "metrics", {}),
+                "download_progress": {
+                    "completed": completed,
+                    "total": total,
+                    "current": current,
+                },
+            }
 
     def list_connectors(self):
         return self.trainer.list_required_apis()
@@ -66,15 +98,49 @@ class DataConnectorService:
         }
         config = self._config_for("copernicus_marine")
         note_settings = parse_copernicus_notes(config.get("notes", ""))
-        output_directory = Path(
+        output_directory = resolve_copernicus_output_directory(
             note_settings.get("path", "").strip()
             or os.getenv("COPERNICUS_OUTPUT_DIR", "").strip()
             or default_copernicus_directory()
         )
         before_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
+        self._set_progress_state(
+            stage="syncing_copernicus",
+            detail=(
+                f"Syncing monthly surface-only Copernicus training files into {output_directory} "
+                f"for the hackathon Pacific window (-160 to -120 lon, 15 to 40 lat)."
+            ),
+            progress=0.05,
+        )
+        sync_steps = [
+            ("currents", sync_copernicus_currents),
+            ("salinity", sync_copernicus_salinity),
+            ("temperature", sync_copernicus_temperature),
+        ]
+        downloads = []
         try:
-            downloads = sync_copernicus_monthly_training(months=6, overrides=note_settings)
+            for index, (label, sync_fn) in enumerate(sync_steps, start=1):
+                self._set_progress_state(
+                    stage="syncing_copernicus",
+                    detail=f"Downloading Copernicus {label} surface grid ({index} of {len(sync_steps)}).",
+                    progress=0.05 + index * 0.02,
+                )
+                self._set_download_progress(
+                    completed=index - 1,
+                    total=len(sync_steps),
+                    current=label,
+                )
+                downloads.append(sync_fn(months=2, overrides=note_settings))
         except CopernicusSyncError as exc:
+            self._set_progress_state(
+                stage="syncing_copernicus_failed",
+                detail=str(exc),
+            )
+            self._set_download_progress(
+                completed=max(0, len(downloads)),
+                total=len(sync_steps),
+                current="failed",
+            )
             return {
                 "connector_id": "copernicus_marine",
                 "connector_name": config["name"],
@@ -86,6 +152,16 @@ class DataConnectorService:
                 "config": config,
             }
         after_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
+        self._set_progress_state(
+            stage="syncing_copernicus_complete",
+            detail=f"Copernicus sync complete. {max(0, len(after_files) - len(before_files))} new NetCDF files detected.",
+            progress=0.12,
+        )
+        self._set_download_progress(
+            completed=len(sync_steps),
+            total=len(sync_steps),
+            current="complete",
+        )
         return {
             "connector_id": "copernicus_marine",
             "connector_name": config["name"],
@@ -136,9 +212,9 @@ class DataConnectorService:
             "max_longitude": -120,
             "min_latitude": 15,
             "max_latitude": 40,
-            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;path=Training_Data/Copernicus",
+            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;min_depth=0;max_depth=1;path=Training_Data/Copernicus",
         }
-        output_directory = Path(
+        output_directory = resolve_copernicus_output_directory(
             note_settings.get("path", "").strip()
             or os.getenv("COPERNICUS_OUTPUT_DIR", "").strip()
             or default_copernicus_directory()

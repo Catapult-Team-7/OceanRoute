@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from connectors import DataConnectorService
 from db.database import get_repo
@@ -34,7 +35,7 @@ async def sync_connector(
     connector_id: str,
     service: Annotated[DataConnectorService, Depends(get_connector_service)],
 ):
-    result = service.sync(connector_id)
+    result = await run_in_threadpool(service.sync, connector_id)
     if result.get("status") == "error" and "not implemented" in result.get("message", ""):
         raise HTTPException(status_code=404, detail=result["message"])
     return result

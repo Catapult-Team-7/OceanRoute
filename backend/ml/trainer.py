@@ -52,10 +52,14 @@ CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 RECOMMENDED_COPERNICUS_CURRENTS_DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_SALINITY_DATASET = "cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET = "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m"
+HACKATHON_COPERNICUS_REGION_NOTES = "min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40"
+HACKATHON_COPERNICUS_DEPTH_NOTES = "min_depth=0;max_depth=1"
 DEFAULT_COPERNICUS_NOTES = (
     f"currents_dataset_id={RECOMMENDED_COPERNICUS_CURRENTS_DATASET};"
     f"salinity_dataset_id={RECOMMENDED_COPERNICUS_SALINITY_DATASET};"
     f"temperature_dataset_id={RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET};"
+    f"{HACKATHON_COPERNICUS_REGION_NOTES};"
+    f"{HACKATHON_COPERNICUS_DEPTH_NOTES};"
     "path=Training_Data/Copernicus"
 )
 

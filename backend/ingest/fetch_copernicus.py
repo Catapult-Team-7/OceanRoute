@@ -8,6 +8,9 @@ from typing import Any
 
 
 DEFAULT_COPERNICUS_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "Training_Data" / "Copernicus"
+DEFAULT_REPO_ROOT = DEFAULT_COPERNICUS_OUTPUT_DIR.parents[1]
+SURFACE_DEPTH_MIN = 0.0
+SURFACE_DEPTH_MAX = 0.0
 
 
 class CopernicusSyncError(RuntimeError):
@@ -30,11 +33,21 @@ class CopernicusSubsetRequest:
     password: str | None = None
     minimum_depth: float | None = None
     maximum_depth: float | None = None
-    force_download: bool = True
+    overwrite: bool = True
+    disable_progress_bar: bool = False
+    netcdf3_compatible: bool = True
+    coordinates_selection_method: str = "nearest"
 
 
 def default_copernicus_directory() -> Path:
     return DEFAULT_COPERNICUS_OUTPUT_DIR
+
+
+def resolve_copernicus_output_directory(path_like: str | Path | None) -> Path:
+    if path_like is None or str(path_like).strip() == "":
+        return default_copernicus_directory()
+    raw = Path(path_like).expanduser()
+    return raw if raw.is_absolute() else (DEFAULT_REPO_ROOT / raw)
 
 
 def parse_copernicus_notes(notes: str | None) -> dict[str, str]:
@@ -72,17 +85,63 @@ def resolve_copernicus_credentials() -> tuple[str, str]:
 def _copernicus_client():
     try:
         import copernicusmarine
+        import copernicusmarine.download_functions.download_zarr as download_zarr
     except ImportError as exc:
         raise CopernicusSyncError(
             "Missing `copernicusmarine`. Install backend/requirements-ml-ingest.txt to enable live Copernicus downloads."
         ) from exc
+
+    if not getattr(download_zarr, "_oceanpulse_netcdf_patch", False):
+        def _oceanpulse_download_dataset_as_netcdf(
+            dataset,
+            output_path,
+            netcdf_compression_level,
+            netcdf3_compatible,
+        ):
+            for coord in dataset.coords:
+                dataset[coord].encoding["_FillValue"] = None
+
+            encoding = None
+            if netcdf_compression_level and netcdf_compression_level > 0:
+                comp = {
+                    "zlib": True,
+                    "complevel": netcdf_compression_level,
+                    "contiguous": False,
+                    "shuffle": True,
+                }
+                keys_to_keep = {"scale_factor", "add_offset", "dtype", "_FillValue", "units"}
+                encoding = {
+                    name: {
+                        **{
+                            key: value
+                            for key, value in var.encoding.items()
+                            if key in keys_to_keep
+                        },
+                        **comp,
+                    }
+                    for name, var in dataset.data_vars.items()
+                }
+
+            # CopernicusMarine defaults to NETCDF3_CLASSIC when netcdf3_compatible=True,
+            # which trips size limits for these subsets. We intentionally write standard
+            # NetCDF4 with the netCDF4 engine, which is available in this project env.
+            return dataset.to_netcdf(
+                output_path,
+                mode="w",
+                encoding=encoding,
+                engine="netcdf4",
+            )
+
+        download_zarr._download_dataset_as_netcdf = _oceanpulse_download_dataset_as_netcdf
+        download_zarr._oceanpulse_netcdf_patch = True
+
     return copernicusmarine
 
 
 def login_copernicus() -> dict[str, Any]:
     copernicusmarine = _copernicus_client()
     username, password = resolve_copernicus_credentials()
-    copernicusmarine.login(username=username, password=password)
+    copernicusmarine.login(username=username, password=password, force_overwrite=True)
     return {"username": username}
 
 
@@ -91,15 +150,12 @@ def subset_copernicus(request: CopernicusSubsetRequest) -> dict[str, Any]:
     output_directory = Path(request.output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    # This follows the official toolbox pattern using `login()` and `subset()`.
-    # Dataset IDs are intentionally environment-driven because the exact Copernicus
-    # product choice depends on the hackathon scope and account entitlements.
-    copernicusmarine.login(
-        username=request.username or resolve_copernicus_credentials()[0],
-        password=request.password or resolve_copernicus_credentials()[1],
-    )
+    username = request.username or resolve_copernicus_credentials()[0]
+    password = request.password or resolve_copernicus_credentials()[1]
     subset_kwargs = {
         "dataset_id": request.dataset_id,
+        "username": username,
+        "password": password,
         "variables": request.variables,
         "minimum_longitude": request.minimum_longitude,
         "maximum_longitude": request.maximum_longitude,
@@ -109,7 +165,10 @@ def subset_copernicus(request: CopernicusSubsetRequest) -> dict[str, Any]:
         "end_datetime": request.end_datetime,
         "output_directory": str(output_directory),
         "output_filename": request.output_filename,
-        "force_download": request.force_download,
+        "overwrite": request.overwrite,
+        "disable_progress_bar": request.disable_progress_bar,
+        "netcdf3_compatible": request.netcdf3_compatible,
+        "coordinates_selection_method": request.coordinates_selection_method,
     }
     if request.minimum_depth is not None:
         subset_kwargs["minimum_depth"] = request.minimum_depth
@@ -122,8 +181,8 @@ def subset_copernicus(request: CopernicusSubsetRequest) -> dict[str, Any]:
         )
     except ImportError as exc:
         raise CopernicusSyncError(
-            "Copernicus download started, but local NetCDF export failed because the backend is missing "
-            "`h5py`/`h5netcdf`. Reinstall backend/requirements-ml-ingest.txt and retry."
+            "Copernicus download started, but local NetCDF export failed because required NetCDF dependencies are "
+            "missing. Reinstall backend/requirements-ml-ingest.txt and retry."
         ) from exc
     except Exception as exc:
         raise CopernicusSyncError(str(exc)) from exc
@@ -167,12 +226,18 @@ def _build_request(
         )
     start_datetime, end_datetime = build_default_copernicus_time_window(months=months)
     username, password = resolve_copernicus_credentials()
-    output_directory = Path(
+    output_directory = resolve_copernicus_output_directory(
         overrides.get("path", "").strip()
         or overrides.get("output_directory", "").strip()
         or os.getenv("COPERNICUS_OUTPUT_DIR", "").strip()
         or default_copernicus_directory()
     )
+    use_surface_depth = any(variable in {"uo", "vo", "so", "thetao"} for variable in variables)
+    minimum_depth = None
+    maximum_depth = None
+    if use_surface_depth:
+        minimum_depth = float(overrides.get("min_depth", _env_float("COPERNICUS_MIN_DEPTH", SURFACE_DEPTH_MIN)))
+        maximum_depth = float(overrides.get("max_depth", _env_float("COPERNICUS_MAX_DEPTH", SURFACE_DEPTH_MAX)))
     return CopernicusSubsetRequest(
         dataset_id=dataset_id,
         variables=variables,
@@ -186,6 +251,12 @@ def _build_request(
         output_filename=overrides.get("output_filename", "").strip() or os.getenv("COPERNICUS_OUTPUT_FILENAME", "").strip() or default_filename,
         username=username,
         password=password,
+        minimum_depth=minimum_depth,
+        maximum_depth=maximum_depth,
+        overwrite=overrides.get("overwrite", "").strip().lower() not in {"false", "0", "no"},
+        disable_progress_bar=overrides.get("disable_progress_bar", "").strip().lower() in {"true", "1", "yes"},
+        netcdf3_compatible=overrides.get("netcdf3_compatible", "").strip().lower() not in {"false", "0", "no"},
+        coordinates_selection_method=overrides.get("coordinates_selection_method", "").strip() or "nearest",
     )
 
 

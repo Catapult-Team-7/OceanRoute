@@ -43,9 +43,11 @@ export default function ProgressDashboard() {
     loadHealth();
     loadStatus();
     const interval = window.setInterval(loadStatus, 1200);
+    const healthInterval = window.setInterval(loadHealth, 2500);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      window.clearInterval(healthInterval);
     };
   }, []);
 
