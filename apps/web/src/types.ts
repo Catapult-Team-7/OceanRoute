@@ -1,6 +1,7 @@
 export type DebrisClass = "low" | "high";
 export type RecommendedMode = "collection" | "recon";
 export type SourceMode = "auto" | "sample" | "live";
+export type BenchmarkStrategyName = "nearest_hotspot" | "highest_yield" | "recon_aware";
 
 export interface HealthStatus {
   status: string;
@@ -108,6 +109,26 @@ export interface RoutePlan {
   forecast_provenance: ForecastProvenance | null;
   forecast_is_stale: boolean;
   metadata: Record<string, number | string>;
+}
+
+export interface RoutingBenchmarkStrategy {
+  strategy: BenchmarkStrategyName;
+  recommended_mode: RecommendedMode;
+  ordered_cell_ids: string[];
+  expected_kg_min: number;
+  expected_kg_max: number;
+  expected_distance_km: number;
+  uncertainty_penalty: number;
+  hotspot_hit_rate_estimate: number;
+  objective_score: number;
+}
+
+export interface RoutingBenchmarkReport {
+  generated_at: string;
+  forecast_run_id: string;
+  target_horizon_hour: number;
+  compared_strategies: RoutingBenchmarkStrategy[];
+  winning_strategy: BenchmarkStrategyName;
 }
 
 export interface ImpactDashboard {

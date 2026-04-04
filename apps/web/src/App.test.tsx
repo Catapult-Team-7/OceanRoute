@@ -141,6 +141,37 @@ const routeResponse = {
   metadata: { solver: "ortools" },
 };
 
+const benchmarkResponse = {
+  generated_at: "2026-04-04T12:00:00Z",
+  forecast_run_id: "run-1",
+  target_horizon_hour: 24,
+  winning_strategy: "recon_aware",
+  compared_strategies: [
+    {
+      strategy: "nearest_hotspot",
+      recommended_mode: "collection",
+      ordered_cell_ids: ["north_bay:low"],
+      expected_kg_min: 4.2,
+      expected_kg_max: 7.8,
+      expected_distance_km: 8.6,
+      uncertainty_penalty: 1.1,
+      hotspot_hit_rate_estimate: 0.62,
+      objective_score: 3.5,
+    },
+    {
+      strategy: "recon_aware",
+      recommended_mode: "collection",
+      ordered_cell_ids: ["north_bay:low", "east_wharf:high"],
+      expected_kg_min: 6.1,
+      expected_kg_max: 10.4,
+      expected_distance_km: 11.2,
+      uncertainty_penalty: 0.9,
+      hotspot_hit_rate_estimate: 0.71,
+      objective_score: 4.8,
+    },
+  ],
+};
+
 function mockResponse(payload: unknown) {
   return Promise.resolve({
     ok: true,
@@ -178,6 +209,9 @@ function installFetchMock() {
         mission_hit_rate: 1,
         latest_updated_at: "2026-04-04T12:00:00Z",
       });
+    }
+    if (url.includes("/api/impact/benchmarks/latest")) {
+      return mockResponse(benchmarkResponse);
     }
     if (url.includes("/api/forecast/latest")) {
       return mockResponse(url.includes("class=low") ? lowOnlyForecast : baseForecast);
