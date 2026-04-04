@@ -110,11 +110,14 @@ class DemoOceanRepository:
             self.last_grid_metadata = real_bundle.metadata
             self.last_real_anomalies = real_bundle.anomalies
             return real_bundle.rows
-        except RealDataLoadError:
+        except RealDataLoadError as exc:
             self.last_grid_metadata = {
                 "verified_map": False,
                 "map_source": "synthetic_demo_grid",
-                "source_summary": "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+                "source_summary": (
+                    "Spatial ocean map still uses synthetic demo fields because the checkpoint-backed map build failed: "
+                    f"{exc}"
+                ),
             }
             self.last_real_anomalies = []
 

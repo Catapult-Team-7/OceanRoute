@@ -86,6 +86,48 @@ class DataConnectorService:
             return self._preview_static(
                 connector_id,
                 message="NASA Ocean Color requires a product selection and often Earthdata-authenticated downloads. Configure the product URL first.",
+                extra={
+                    "product_hint": "Level-3 chlorophyll-a composites are the best first fit for monthly biological uptake context.",
+                    "api_docs": [
+                        "https://oceandata.sci.gsfc.nasa.gov/api/",
+                        "https://oceancolor.gsfc.nasa.gov/resources/docs/tutorials/notebooks/modis-explore-l3/",
+                    ],
+                },
+            )
+        if connector_id == "global_fishing_watch":
+            return self._preview_static(
+                connector_id,
+                message="Global Fishing Watch can provide AIS vessel presence, vessel identity, and port visits once you request API access.",
+                extra={
+                    "api_docs": ["https://globalfishingwatch.org/our-apis/documentation"],
+                    "use_cases": ["AIS vessel presence", "port visits", "vessel identity", "encounters"],
+                },
+            )
+        if connector_id == "world_port_index":
+            return self._preview_static(
+                connector_id,
+                message="The NGA World Port Index feature service is the right source for replacing hardcoded port targets with real port records.",
+                extra={
+                    "feature_service": "https://vcps.nga.mil/nauticalpubs-feature/rest/services/WPI/World_Port_Index_Viewer/FeatureServer",
+                    "fields": ["PORT_NAME", "COUNTRY", "LATITUDE", "LONGITUDE"],
+                },
+            )
+        if connector_id == "emodnet_litter":
+            return self._preview_static(
+                connector_id,
+                message="EMODnet litter data is a strong candidate for measured marine debris context, but it needs a product-specific ingest mapping first.",
+                extra={
+                    "portal": "https://emodnet.ec.europa.eu/en/chemistry",
+                    "use_case": "Replace modeled recovery targets with measured litter observations where coverage exists.",
+                },
+            )
+        if connector_id == "oceanscan":
+            return self._preview_static(
+                connector_id,
+                message="OceanScan is tracked as an additional debris/ocean monitoring source. It still needs product-level evaluation before sync is implemented.",
+                extra={
+                    "portal": "https://www.oceanscan.org",
+                },
             )
         return {"status": "error", "message": f"Unknown connector: {connector_id}"}
 
@@ -182,15 +224,18 @@ class DataConnectorService:
                 return item
         return None
 
-    def _preview_static(self, connector_id: str, message: str):
+    def _preview_static(self, connector_id: str, message: str, extra: dict | None = None):
         config = self._config_for(connector_id)
-        return {
+        payload = {
             "connector_id": connector_id,
             "connector_name": config["name"] if config else connector_id,
             "status": "needs_config",
             "message": message,
             "config": config,
         }
+        if extra:
+            payload.update(extra)
+        return payload
 
     def _preview_copernicus(self):
         config = self._config_for("copernicus_marine")

@@ -111,6 +111,50 @@ REAL_DATA_APIS = [
         "notes": "",
     },
     {
+        "id": "global_fishing_watch",
+        "name": "Global Fishing Watch",
+        "purpose": "AIS vessel presence, port visits, and vessel identity for route feasibility and supervision.",
+        "status": "planned",
+        "enabled": False,
+        "fields": ["vessel presence", "port visits", "identity", "AIS gaps"],
+        "url": "https://globalfishingwatch.org/our-apis/documentation",
+        "env_var": "GLOBAL_FISHING_WATCH_URL",
+        "notes": "",
+    },
+    {
+        "id": "world_port_index",
+        "name": "NGA World Port Index",
+        "purpose": "Real port locations and metadata for route targets and nearest-port logic.",
+        "status": "planned",
+        "enabled": False,
+        "fields": ["port name", "country", "coordinates", "harbor metadata"],
+        "url": "https://vcps.nga.mil/nauticalpubs-feature/rest/services/WPI/World_Port_Index_Viewer/FeatureServer",
+        "env_var": "WORLD_PORT_INDEX_URL",
+        "notes": "",
+    },
+    {
+        "id": "emodnet_litter",
+        "name": "EMODnet Chemistry / Litter",
+        "purpose": "Marine litter observations for replacing modeled recovery targets with measured debris context.",
+        "status": "planned",
+        "enabled": False,
+        "fields": ["marine litter observations", "survey metadata"],
+        "url": "https://emodnet.ec.europa.eu/en/chemistry",
+        "env_var": "EMODNET_LITTER_URL",
+        "notes": "",
+    },
+    {
+        "id": "oceanscan",
+        "name": "OceanScan",
+        "purpose": "Additional marine debris and ocean monitoring products for trash accumulation evidence.",
+        "status": "planned",
+        "enabled": False,
+        "fields": ["debris observations", "ocean monitoring products"],
+        "url": "https://www.oceanscan.org",
+        "env_var": "OCEANSCAN_URL",
+        "notes": "",
+    },
+    {
         "id": "era5",
         "name": "ERA5",
         "purpose": "Wind forcing for gas transfer velocity and routing conditions.",
@@ -259,6 +303,35 @@ class MLTrainerService:
                 configured["status"] = "connected"
                 configured["notes"] = DEFAULT_COPERNICUS_NOTES
             self.api_registry.append(configured)
+        self._bootstrap_from_checkpoint()
+
+    def _bootstrap_from_checkpoint(self):
+        checkpoint_path = CHECKPOINT_DIR / "oceanpulse_latest.pt"
+        if not checkpoint_path.exists() or torch is None:
+            return
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        except Exception:
+            logger.exception("ml_checkpoint_bootstrap_failed path=%s", checkpoint_path)
+            return
+
+        self.state.model_ready = True
+        self.state.model_summary = {
+            "mode": "real_monthly_convlstm",
+            "target": "co2_flux",
+            "features": checkpoint.get("feature_names", self.state.model_summary.get("features", [])),
+            "checkpoint_path": str(checkpoint_path),
+        }
+        self.state.data_summary = {
+            **self.state.data_summary,
+            **checkpoint.get("data_summary", {}),
+        }
+        self.state.metrics = {
+            **self.state.metrics,
+            "stage": "checkpoint_loaded",
+            "detail": f"Loaded existing checkpoint from {checkpoint_path}.",
+            "checkpoint_path": str(checkpoint_path),
+        }
 
     def list_required_apis(self):
         return [dict(item) for item in self.api_registry]
