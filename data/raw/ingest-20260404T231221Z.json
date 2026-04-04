@@ -1,0 +1,18 @@
+{
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=water_temperature&application=OceanRoute&date=latest&station=9415020&time_zone=gmt&units=metric&format=json",
+  "payload": {
+    "metadata": {
+      "id": "9415020",
+      "name": "Point Reyes",
+      "lat": "37.9942",
+      "lon": "-122.9736"
+    },
+    "data": [
+      {
+        "t": "2026-04-04 23:00",
+        "v": "11.6",
+        "f": "0,0,0"
+      }
+    ]
+  }
+}
