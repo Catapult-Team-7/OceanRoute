@@ -1,4 +1,4 @@
-xarray==2024.3.0
+xarray>=2024.10.0
 netCDF4==1.7.1
 torch==2.3.0
 scipy==1.13.0

@@ -28,8 +28,8 @@ class CopernicusSubsetRequest:
     output_filename: str
     username: str | None = None
     password: str | None = None
-    minimum_depth: float | None = 0.0
-    maximum_depth: float | None = 1.0
+    minimum_depth: float | None = None
+    maximum_depth: float | None = None
     force_download: bool = True
 
 
@@ -98,20 +98,26 @@ def subset_copernicus(request: CopernicusSubsetRequest) -> dict[str, Any]:
         username=request.username or resolve_copernicus_credentials()[0],
         password=request.password or resolve_copernicus_credentials()[1],
     )
+    subset_kwargs = {
+        "dataset_id": request.dataset_id,
+        "variables": request.variables,
+        "minimum_longitude": request.minimum_longitude,
+        "maximum_longitude": request.maximum_longitude,
+        "minimum_latitude": request.minimum_latitude,
+        "maximum_latitude": request.maximum_latitude,
+        "start_datetime": request.start_datetime,
+        "end_datetime": request.end_datetime,
+        "output_directory": str(output_directory),
+        "output_filename": request.output_filename,
+        "force_download": request.force_download,
+    }
+    if request.minimum_depth is not None:
+        subset_kwargs["minimum_depth"] = request.minimum_depth
+    if request.maximum_depth is not None:
+        subset_kwargs["maximum_depth"] = request.maximum_depth
+
     result = copernicusmarine.subset(
-        dataset_id=request.dataset_id,
-        variables=request.variables,
-        minimum_longitude=request.minimum_longitude,
-        maximum_longitude=request.maximum_longitude,
-        minimum_latitude=request.minimum_latitude,
-        maximum_latitude=request.maximum_latitude,
-        start_datetime=request.start_datetime,
-        end_datetime=request.end_datetime,
-        minimum_depth=request.minimum_depth,
-        maximum_depth=request.maximum_depth,
-        output_directory=str(output_directory),
-        output_filename=request.output_filename,
-        force_download=request.force_download,
+        **subset_kwargs,
     )
     return {
         "result": str(result),
