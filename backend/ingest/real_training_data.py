@@ -198,6 +198,7 @@ def load_socat_observations(data_url: str, sample_size: int = 15000) -> pd.DataF
     source = local_fallback if local_fallback and not _is_remote_source(url) else url
     if isinstance(source, str) and "/erddap/tabledap/" in source and "?" not in source:
         source = _build_socat_erddap_query(source, sample_size=sample_size)
+    erddap_source = isinstance(source, str) and "/erddap/tabledap/" in source
     delimiter = "\t" if str(source).endswith((".tsv", ".txt", ".zip")) else ","
     read_kwargs = {
         "sep": delimiter,
@@ -218,7 +219,7 @@ def load_socat_observations(data_url: str, sample_size: int = 15000) -> pd.DataF
             "temp",
             "fCO2_insitu_from_xCO2_water_sst_dry_ppm_ncep",
         },
-        "nrows": max(sample_size * 3, 6000),
+        "nrows": max(sample_size * 10, 50000) if erddap_source else max(sample_size * 3, 6000),
         "low_memory": False,
     }
 
@@ -231,8 +232,19 @@ def load_socat_observations(data_url: str, sample_size: int = 15000) -> pd.DataF
         raise RealDataLoadError(f"Failed to load SOCAT data from {url}: {exc}") from exc
 
     normalized = _normalize_socat_frame(frame)
+    if normalized.empty and erddap_source:
+        logger.warning(
+            "socat_erddap_empty_after_cleaning_retrying url=%s columns=%s",
+            source,
+            list(frame.columns),
+        )
+        retry_kwargs = {**read_kwargs, "nrows": max(read_kwargs["nrows"], 100000)}
+        frame = pd.read_csv(source, **retry_kwargs)
+        normalized = _normalize_socat_frame(frame)
     if normalized.empty:
-        raise RealDataLoadError("SOCAT data loaded, but no valid rows were found after cleaning.")
+        raise RealDataLoadError(
+            f"SOCAT data loaded, but no valid rows were found after cleaning. Raw columns: {list(frame.columns)}"
+        )
 
     if len(normalized) > sample_size:
         normalized = normalized.sample(n=sample_size, random_state=42).sort_values("datetime")
@@ -242,23 +254,39 @@ def load_socat_observations(data_url: str, sample_size: int = 15000) -> pd.DataF
 
 def _normalize_socat_frame(frame: pd.DataFrame) -> pd.DataFrame:
     normalized = frame.copy()
-    normalized.columns = [str(column).strip() for column in normalized.columns]
+    normalized.columns = [str(column).strip().strip('"').lower() for column in normalized.columns]
 
-    if {"time", "latitude", "longitude"}.issubset(normalized.columns) and (
-        "fCO2_insitu_from_xCO2_water_sst_dry_ppm_ncep" in normalized.columns or "sal" in normalized.columns
-    ):
-        normalized = _safe_numeric(
-            normalized,
-            ["latitude", "longitude", "sal", "temp", "fCO2_insitu_from_xCO2_water_sst_dry_ppm_ncep"],
+    if {"time", "latitude", "longitude"}.issubset(normalized.columns):
+        salinity_column = next((column for column in ("sal", "salinity") if column in normalized.columns), None)
+        temperature_column = next((column for column in ("temp", "sst_c", "sst") if column in normalized.columns), None)
+        pco2_column = next(
+            (
+                column
+                for column in normalized.columns
+                if "fco2" in column.lower() or "pco2_ocean" in column.lower() or column.lower() == "fco2rec"
+            ),
+            None,
         )
-        normalized["datetime"] = pd.to_datetime(normalized["time"], utc=True, errors="coerce")
+        if pco2_column is None:
+            raise RealDataLoadError(
+                f"SOCAT ERDDAP data did not include a recognizable fCO2 column. Columns: {list(normalized.columns)}"
+            )
+
+        numeric_columns = ["latitude", "longitude", pco2_column]
+        if salinity_column:
+            numeric_columns.append(salinity_column)
+        if temperature_column:
+            numeric_columns.append(temperature_column)
+        normalized = _safe_numeric(normalized, numeric_columns)
+
+        normalized["datetime"] = pd.to_datetime(normalized["time"], utc=True, errors="coerce", format="ISO8601")
+        if normalized["datetime"].isna().all():
+            normalized["datetime"] = pd.to_datetime(normalized["time"], utc=True, errors="coerce")
         normalized["lon"] = _normalize_longitude(normalized["longitude"])
         normalized["lat"] = pd.to_numeric(normalized["latitude"], errors="coerce")
-        normalized["sst"] = pd.to_numeric(normalized.get("temp"), errors="coerce")
-        normalized["salinity"] = pd.to_numeric(normalized.get("sal"), errors="coerce")
-        normalized["pco2_ocean"] = pd.to_numeric(
-            normalized.get("fCO2_insitu_from_xCO2_water_sst_dry_ppm_ncep"), errors="coerce"
-        )
+        normalized["sst"] = pd.to_numeric(normalized[temperature_column], errors="coerce") if temperature_column else np.nan
+        normalized["salinity"] = pd.to_numeric(normalized[salinity_column], errors="coerce") if salinity_column else np.nan
+        normalized["pco2_ocean"] = pd.to_numeric(normalized[pco2_column], errors="coerce")
         normalized = normalized.dropna(subset=["datetime", "lat", "lon", "pco2_ocean"])
         normalized = normalized[(normalized["lat"].between(-89.5, 89.5)) & (normalized["lon"].between(-180, 180))]
         normalized["year"] = normalized["datetime"].dt.year

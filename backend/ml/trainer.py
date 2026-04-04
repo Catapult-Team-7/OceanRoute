@@ -357,6 +357,7 @@ class MLTrainerService:
                 "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.05))),
                 "month_window": int((config or {}).get("month_window", self.state.config.get("month_window", 12))),
                 "resolution": str((config or {}).get("resolution", self.state.config.get("resolution", "2deg"))),
+                "quick_test": bool((config or {}).get("quick_test", False)),
             }
             self.state = TrainingState(
                 status="running",
@@ -373,7 +374,7 @@ class MLTrainerService:
             self._thread.start()
             return self.state.snapshot(), True
 
-    def _build_dataset(self, month_window: int, resolution: str):
+    def _build_dataset(self, month_window: int, resolution: str, quick_test: bool = False):
         real_ready, connector_state = self._real_training_ready()
         if not real_ready:
             raise RealDataLoadError(
@@ -407,6 +408,7 @@ class MLTrainerService:
             reference_now=self.repo.now,
             era_directory=era5_path,
             copernicus_directory=copernicus_path,
+            sample_size=4000 if quick_test else 12000,
         )
         self.atmospheric_lookup = dict(real_dataset.atmospheric_lookup)
         summary = {
@@ -469,7 +471,9 @@ class MLTrainerService:
                     "stage": "loading_real_observations",
                     "detail": "Loading SOCAT, NOAA GML, and configured real-source connectors.",
                 }
-            X, y, data_summary = self._build_dataset(config["month_window"], config["resolution"])
+            X, y, data_summary = self._build_dataset(
+                config["month_window"], config["resolution"], config.get("quick_test", False)
+            )
             with self._lock:
                 self.state.data_summary = data_summary
                 self.state.metrics = {
@@ -491,7 +495,17 @@ class MLTrainerService:
             if not copernicus_dir.is_absolute():
                 copernicus_dir = default_copernicus_directory().parents[1] / copernicus_dir
             if copernicus_config and copernicus_config.get("enabled") and not copernicus_dir.exists():
-                sync_months = max(6, min(config["month_window"] + 2, 15))
+                if config.get("quick_test", False):
+                    raise RealDataLoadError(
+                        "Quick validation mode will not wait on a live Copernicus sync. "
+                        f"Please sync Copernicus first so monthly NetCDF files exist in {copernicus_dir}, "
+                        "or switch back to full training mode."
+                    )
+                sync_months = (
+                    max(4, min(config["month_window"] + 1, 6))
+                    if config.get("quick_test", False)
+                    else max(6, min(config["month_window"] + 2, 15))
+                )
                 with self._lock:
                     self.state.metrics = {
                         **self.state.metrics,

@@ -9,6 +9,7 @@ const DEFAULT_FORM = {
   learning_rate: 0.05,
   month_window: 12,
   resolution: "2deg",
+  quick_test: false,
 };
 
 const MODEL_LIMITS = [
@@ -155,6 +156,25 @@ export default function MLLab() {
     }
   }
 
+  function applyQuickValidationPreset() {
+    setForm((current) => ({
+      ...current,
+      epochs: 5,
+      learning_rate: 0.03,
+      month_window: 4,
+      resolution: "2deg",
+      quick_test: true,
+    }));
+    setActionMessage("Quick validation preset applied: 5 epochs, 4-month window, 2deg resolution.");
+  }
+
+  function disableQuickValidationPreset() {
+    setForm((current) => ({
+      ...current,
+      quick_test: false,
+    }));
+  }
+
   async function saveApis() {
     setIsSavingApis(true);
     try {
@@ -293,6 +313,9 @@ export default function MLLab() {
             <button type="button" className="secondary-button" onClick={saveAndStartHackathonTraining}>
               Save + Start Training
             </button>
+            <button type="button" className="secondary-button" onClick={applyQuickValidationPreset}>
+              Quick Validation Mode
+            </button>
           </div>
           {actionMessage ? <p className="subtle">{actionMessage}</p> : null}
           {backendHealth.checked ? (
@@ -303,10 +326,24 @@ export default function MLLab() {
         <div className="ml-section">
           <div className="section-header">
             <h3>Training Controls</h3>
-            <button type="button" className="primary-button" onClick={startTraining} disabled={isSubmitting}>
+            <div className="connector-actions">
+              {form.quick_test ? (
+                <button type="button" className="secondary-button" onClick={disableQuickValidationPreset}>
+                  Full Training Settings
+                </button>
+              ) : null}
+              <button type="button" className="primary-button" onClick={startTraining} disabled={isSubmitting}>
               {status?.status === "running" ? "Training…" : "Start Training"}
-            </button>
+              </button>
+            </div>
           </div>
+          {form.quick_test ? <p className="subtle">Quick validation is on. This run uses a lighter sample and shorter sync window just to verify the pipeline.</p> : null}
+          {form.quick_test ? (
+            <p className="subtle">
+              Quick validation does not wait on a fresh Copernicus download. If `Training_Data/Copernicus` is empty,
+              it will fail fast so you can sync that connector separately.
+            </p>
+          ) : null}
           <div className="ml-form-grid">
             <label>
               Epochs
@@ -349,6 +386,22 @@ export default function MLLab() {
                 <option value="1deg">1deg</option>
                 <option value="0.5deg">0.5deg</option>
               </select>
+            </label>
+            <label className="toggle-label">
+              <input
+                type="checkbox"
+                checked={form.quick_test}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    quick_test: event.target.checked,
+                    epochs: event.target.checked ? Math.min(current.epochs, 5) : current.epochs,
+                    month_window: event.target.checked ? Math.min(current.month_window, 4) : current.month_window,
+                    resolution: event.target.checked ? "2deg" : current.resolution,
+                  }))
+                }
+              />
+              Quick validation mode
             </label>
           </div>
         </div>
@@ -541,9 +594,29 @@ export default function MLLab() {
                   <div className="preview-panel">
                     <strong>{previewById[api.id].status}</strong>
                     <p>{previewById[api.id].message}</p>
+                    {previewById[api.id].local_output_directory ? (
+                      <p>
+                        <strong>Local directory:</strong> {previewById[api.id].local_output_directory}
+                      </p>
+                    ) : null}
+                    {typeof previewById[api.id].local_netcdf_count === "number" ? (
+                      <p>
+                        <strong>NetCDF files present:</strong> {previewById[api.id].local_netcdf_count}
+                      </p>
+                    ) : null}
+                    {typeof previewById[api.id].local_netcdf_count_before === "number" ? (
+                      <p>
+                        <strong>Before sync:</strong> {previewById[api.id].local_netcdf_count_before} ·{" "}
+                        <strong>After sync:</strong> {previewById[api.id].local_netcdf_count} ·{" "}
+                        <strong>New files:</strong> {previewById[api.id].new_files_downloaded}
+                      </p>
+                    ) : null}
                     {previewById[api.id].search_url ? <small>{previewById[api.id].search_url}</small> : null}
                     {previewById[api.id].request_template ? (
                       <pre>{JSON.stringify(previewById[api.id].request_template, null, 2)}</pre>
+                    ) : null}
+                    {previewById[api.id].local_netcdf_files ? (
+                      <pre>{JSON.stringify(previewById[api.id].local_netcdf_files, null, 2)}</pre>
                     ) : null}
                     {previewById[api.id].records ? (
                       <pre>{JSON.stringify(previewById[api.id].records, null, 2)}</pre>

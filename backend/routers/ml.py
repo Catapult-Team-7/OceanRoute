@@ -15,6 +15,7 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(default=0.05, gt=0.0001, le=1.0)
     month_window: int = Field(default=12, ge=3, le=24)
     resolution: str = Field(default="2deg")
+    quick_test: bool = False
 
 
 class ApiSourceUpdate(BaseModel):

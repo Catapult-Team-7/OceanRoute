@@ -10,7 +10,7 @@ from ingest.fetch_copernicus import (
     default_copernicus_directory,
     parse_copernicus_notes,
     resolve_copernicus_credentials,
-    sync_copernicus_defaults,
+    sync_copernicus_monthly_training,
 )
 from ingest.real_training_data import (
     DEFAULT_NOAA_GML_CO2_URL,
@@ -63,26 +63,40 @@ class DataConnectorService:
                 "connector_id": connector_id,
                 "status": "error",
                 "message": f"Sync is not implemented for {connector_id}.",
-            }
+        }
         config = self._config_for("copernicus_marine")
         note_settings = parse_copernicus_notes(config.get("notes", ""))
+        output_directory = Path(
+            note_settings.get("path", "").strip()
+            or os.getenv("COPERNICUS_OUTPUT_DIR", "").strip()
+            or default_copernicus_directory()
+        )
+        before_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
         try:
-            result = sync_copernicus_defaults(overrides=note_settings)
+            downloads = sync_copernicus_monthly_training(months=6, overrides=note_settings)
         except CopernicusSyncError as exc:
             return {
                 "connector_id": "copernicus_marine",
                 "connector_name": config["name"],
                 "status": "error",
                 "message": str(exc),
+                "output_directory": str(output_directory),
+                "local_netcdf_count": len(before_files),
+                "local_netcdf_files": [str(path) for path in before_files[:12]],
                 "config": config,
             }
+        after_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
         return {
             "connector_id": "copernicus_marine",
             "connector_name": config["name"],
             "status": "ready",
-            "message": "Copernicus current and salinity subsets were downloaded to the configured local directory.",
-            "downloads": result["downloads"],
-            "output_directory": result["output_directory"],
+            "message": "Copernicus monthly training subsets finished syncing.",
+            "downloads": downloads,
+            "output_directory": str(output_directory),
+            "local_netcdf_count_before": len(before_files),
+            "local_netcdf_count": len(after_files),
+            "new_files_downloaded": max(0, len(after_files) - len(before_files)),
+            "local_netcdf_files": [str(path) for path in after_files[:12]],
             "config": config,
         }
 
@@ -160,6 +174,7 @@ class DataConnectorService:
             "credentials_detected": credentials_detected,
             "request_template": example,
             "local_output_directory": str(output_directory),
+            "local_netcdf_count": len(nc_files),
             "local_netcdf_files": [str(path) for path in nc_files[:10]],
             "dataset_id_hints": {
                 "monthly_training": note_settings.get("monthly_physics_dataset_id", "").strip()

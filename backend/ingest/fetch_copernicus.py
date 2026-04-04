@@ -116,9 +116,17 @@ def subset_copernicus(request: CopernicusSubsetRequest) -> dict[str, Any]:
     if request.maximum_depth is not None:
         subset_kwargs["maximum_depth"] = request.maximum_depth
 
-    result = copernicusmarine.subset(
-        **subset_kwargs,
-    )
+    try:
+        result = copernicusmarine.subset(
+            **subset_kwargs,
+        )
+    except ImportError as exc:
+        raise CopernicusSyncError(
+            "Copernicus download started, but local NetCDF export failed because the backend is missing "
+            "`h5py`/`h5netcdf`. Reinstall backend/requirements-ml-ingest.txt and retry."
+        ) from exc
+    except Exception as exc:
+        raise CopernicusSyncError(str(exc)) from exc
     return {
         "result": str(result),
         "output_file": str(output_directory / request.output_filename),
