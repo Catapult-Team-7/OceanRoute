@@ -2,7 +2,7 @@
   "name": "oceanroute",
   "private": true,
   "engines": {
-    "node": "20.19.x"
+    "node": ">=20.19 <21"
   },
   "workspaces": [
     "apps/web"
@@ -16,7 +16,6 @@
     "test:web": "npm run check:node && npm run test --workspace apps/web"
   },
   "devDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "^4.60.1",
     "ansi-regex": "^5.0.1",
     "cssstyle": "^4.1.0"
   }

@@ -920,9 +920,24 @@ textarea:focus {
   color: #8a533d;
 }
 
+.message-banner-info {
+  background: rgba(134, 202, 185, 0.16);
+  color: var(--sea-dark);
+}
+
 .message-banner-success {
   background: rgba(134, 202, 185, 0.18);
   color: var(--sea-dark);
+}
+
+.workspace-note {
+  margin: 0 0 1rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(23, 58, 56, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted);
+  line-height: 1.65;
 }
 
 .site-footer {

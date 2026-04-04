@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import type { LatLngExpression } from "leaflet";
 import { CircleMarker, MapContainer, Popup, Polyline, TileLayer } from "react-leaflet";
+import { DEMO_NOTICE, FALLBACK_NOTICE, STATIC_DEMO, filterDemoForecast, loadDemoBundle } from "./demo";
 import type {
   DebrisClass,
   ForecastProvenance,
@@ -14,7 +15,11 @@ import type {
   RoutingBenchmarkStrategy,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
+const PRODUCT_NAME = "SeaSweep";
+const API_BASE = (() => {
+  const configured = import.meta.env.VITE_API_BASE?.trim();
+  return configured ? configured.replace(/\/$/, "") : "/api";
+})();
 const DEFAULT_CENTER: [number, number] = [37.8066, -122.4659];
 
 const STRATEGY_LABELS: Record<RoutingBenchmarkStrategy["strategy"], string> = {
@@ -23,39 +28,42 @@ const STRATEGY_LABELS: Record<RoutingBenchmarkStrategy["strategy"], string> = {
   recon_aware: "Recon-aware optimizer",
 };
 
-const PLATFORM_PILLARS = [
+const LAUNCH_PILLARS = [
   {
     index: "01",
-    title: "Lead with the mission story",
+    title: "Forecast debris before crews leave the dock",
     copy:
-      "The website now opens with the clearer public-interest story so partners, donors, and crews immediately understand why cleanup missions need better intelligence.",
+      "SeaSweep turns public current and marine-state data into pilot-ready hotspot forecasts so cleanup teams can launch toward likely accumulation zones instead of burning hours searching.",
   },
   {
     index: "02",
-    title: "Keep the working operations stack",
+    title: "Turn hotspots into a collection plan",
     copy:
-      "The experience stays wired to live forecast, route, feedback, and export flows so the site is more than a pitch deck. It is still the real operations surface.",
+      "The same interface compares route options, shows uncertainty, and helps operators choose between a collection mission and a quicker recon pass.",
   },
   {
     index: "03",
-    title: "Make room for the next model",
+    title: "Prove impact with a shared ledger",
     copy:
-      "A dedicated model integration studio keeps connector targets, benchmark comparison, and the next datasets visible in the same place the crews already work.",
+      "Mission feedback, collection results, and benchmark reports stay in the same system so funders, ports, and research partners can see what changed on the water.",
   },
 ];
 
-const OPERATION_LOOP = [
+const PARTNER_FITS = [
   {
-    label: "Ingest and trust",
-    detail: "Forecast freshness, fallback mode, and confidence stay visible so crews know when they are acting on a strong signal.",
+    label: "For NGOs and community fleets",
+    detail:
+      "A lightweight operations layer that makes predictive cleanup planning accessible to smaller teams, not just well-funded programs.",
   },
   {
-    label: "Plan the mission",
-    detail: "Route optimization and recon fallback remain one click away from the live hotspot map.",
+    label: "For ports and municipal partners",
+    detail:
+      "A way to prioritize debris response zones, communicate mission rationale, and keep a transparent record of what was recovered.",
   },
   {
-    label: "Close the loop",
-    detail: "Mission observations and cleanup logs feed the impact ledger so model tuning and sponsor reporting share the same source of truth.",
+    label: "For model and data collaborators",
+    detail:
+      "A launch-ready product surface where better current models, debris labels, and routing logic can be integrated without building another website from scratch.",
   },
 ];
 
@@ -63,17 +71,17 @@ const MODEL_CONNECTORS = [
   {
     name: "SOCAT",
     status: "connected",
-    purpose: "Ship-based ocean carbon observations for labels and validation windows.",
+    purpose: "Ship-based observations that can support labels, calibration, and validation windows.",
   },
   {
     name: "NOAA GML CO2",
     status: "connected",
-    purpose: "Atmospheric CO2 baseline features for residual or hybrid model variants.",
+    purpose: "Atmospheric baselines for hybrid model variants and environmental context.",
   },
   {
     name: "ERA5",
     status: "testing",
-    purpose: "Wind and forcing context for routing, drift, and flux-aware model experiments.",
+    purpose: "Wind and forcing context for routing, drift, and next-step model experiments.",
   },
   {
     name: "Copernicus Marine",
@@ -99,7 +107,29 @@ const MODEL_PRIORITIES = [
   "Observed debris concentration labels to train directly on cleanup outcomes.",
 ];
 
+const HOSTING_NOTES = [
+  "GitHub Pages acts as the SeaSweep landing layer and the fallback judge demo using exported forecast, route, and benchmark artifacts.",
+  "A live API deployment can power fresh forecast runs, route writes, and database-backed feedback without changing the frontend code.",
+  "The Vite base path and API base are build-time configurable, so the same app can ship to repo pages now and a live hackathon endpoint later.",
+];
+
+const DEMO_FLOW_STEPS = [
+  {
+    label: "Predict",
+    detail: "Run a fresh debris forecast and show confidence-aware hotspots on the map.",
+  },
+  {
+    label: "Plan",
+    detail: "Turn the forecast into a route recommendation and benchmark it against simpler strategies.",
+  },
+  {
+    label: "Prove",
+    detail: "Save crew feedback and update the impact ledger so the system closes the loop.",
+  },
+];
+
 type DebrisFilter = DebrisClass | "all";
+type AppMode = "booting" | "live" | "demo";
 
 interface ForecastFilters {
   horizonHour: number;
@@ -255,12 +285,21 @@ function benchmarkSummary(benchmark: RoutingBenchmarkReport | null): string {
   return `${strategyLabel(winner.strategy)} | score ${winner.objective_score.toFixed(1)}`;
 }
 
+function apiBaseLabel(base: string): string {
+  if (base.startsWith("http://") || base.startsWith("https://")) {
+    return base;
+  }
+  return `relative ${base}`;
+}
+
 export function App() {
+  const [appMode, setAppMode] = useState<AppMode>("booting");
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [forecast, setForecast] = useState<ForecastSnapshot | null>(null);
   const [impact, setImpact] = useState<ImpactDashboard | null>(null);
   const [benchmark, setBenchmark] = useState<RoutingBenchmarkReport | null>(null);
   const [route, setRoute] = useState<RoutePlan | null>(null);
+  const [demoSourceForecast, setDemoSourceForecast] = useState<ForecastSnapshot | null>(null);
   const [filters, setFilters] = useState<ForecastFilters>({
     horizonHour: 24,
     debrisClass: "all",
@@ -288,7 +327,32 @@ export function App() {
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [forecastMissing, setForecastMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
+
+  async function activateDemoMode(message: string) {
+    const bundle = await loadDemoBundle();
+    const filteredForecast = filterDemoForecast(bundle.forecast, filters);
+
+    setAppMode("demo");
+    setDemoSourceForecast(bundle.forecast);
+    setHealth(bundle.health);
+    setImpact(bundle.impact);
+    setBenchmark(bundle.benchmark);
+    setRoute(bundle.route);
+    setForecast(filteredForecast);
+    setForecastMissing(filteredForecast.steps.length === 0);
+    setRouteForm((current) => ({
+      ...current,
+      depotLat: bundle.health.default_depot_lat,
+      depotLon: bundle.health.default_depot_lon,
+    }));
+    setStatusMessage(message);
+    setError(null);
+    setLoadingHealth(false);
+    setLoadingForecast(false);
+    setLoadingBenchmark(false);
+  }
 
   async function loadImpactDashboard() {
     try {
@@ -341,9 +405,29 @@ export function App() {
   }
 
   useEffect(() => {
-    void (async () => {
+    let cancelled = false;
+
+    async function bootstrap() {
+      if (STATIC_DEMO) {
+        try {
+          await activateDemoMode(DEMO_NOTICE);
+        } catch (caught) {
+          if (!cancelled) {
+            setError(caught instanceof Error ? caught.message : "Failed to load the hosted SeaSweep demo.");
+            setLoadingHealth(false);
+            setLoadingForecast(false);
+            setLoadingBenchmark(false);
+          }
+        }
+        return;
+      }
+
       try {
         const status = await requestJson<HealthStatus>("/health");
+        if (cancelled) {
+          return;
+        }
+        setAppMode("live");
         setHealth(status);
         setFilters((current) => ({ ...current, horizonHour: status.default_horizon_hours }));
         setRouteForm((current) => ({
@@ -351,26 +435,70 @@ export function App() {
           depotLat: status.default_depot_lat,
           depotLon: status.default_depot_lon,
         }));
+        setStatusMessage("");
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Failed to load system status.");
+        if (cancelled) {
+          return;
+        }
+        try {
+          await activateDemoMode(FALLBACK_NOTICE);
+        } catch {
+          setError(caught instanceof Error ? caught.message : "Failed to load system status.");
+          setLoadingForecast(false);
+          setLoadingBenchmark(false);
+        }
       } finally {
-        setLoadingHealth(false);
+        if (!cancelled) {
+          setLoadingHealth(false);
+        }
       }
-    })();
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
+    if (appMode !== "live") {
+      return;
+    }
     void loadImpactDashboard();
     void loadBenchmarkReport();
-  }, []);
+  }, [appMode]);
 
   useEffect(() => {
+    if (appMode !== "live") {
+      return;
+    }
     void loadForecastSnapshot(filters);
-  }, [filters.horizonHour, filters.debrisClass, filters.minConfidence]);
+  }, [appMode, filters.horizonHour, filters.debrisClass, filters.minConfidence]);
+
+  useEffect(() => {
+    if (appMode !== "demo" || !demoSourceForecast) {
+      return;
+    }
+    const filteredForecast = filterDemoForecast(demoSourceForecast, filters);
+    setForecast(filteredForecast);
+    setForecastMissing(filteredForecast.steps.length === 0);
+  }, [appMode, demoSourceForecast, filters.horizonHour, filters.debrisClass, filters.minConfidence]);
 
   async function handleRunForecast() {
     setLoadingForecast(true);
     setError(null);
+
+    if (appMode === "demo") {
+      try {
+        await activateDemoMode(DEMO_NOTICE);
+        setStatusMessage("SeaSweep demo refreshed from the seeded San Francisco Bay scenario.");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to refresh the hosted demo.");
+        setLoadingForecast(false);
+      }
+      return;
+    }
+
     try {
       await requestJson("/forecast/run", {
         method: "POST",
@@ -382,6 +510,7 @@ export function App() {
       });
       await loadForecastSnapshot(filters);
       await loadBenchmarkReport();
+      setStatusMessage("Forecast refreshed from the live operations API.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to run forecast.");
       setLoadingForecast(false);
@@ -391,6 +520,21 @@ export function App() {
   async function handleOptimizeRoute() {
     setLoadingRoute(true);
     setError(null);
+
+    if (appMode === "demo") {
+      try {
+        const bundle = await loadDemoBundle();
+        setRoute(bundle.route);
+        setBenchmark(bundle.benchmark);
+        setStatusMessage("Showing the seeded collection route used in the SeaSweep judge demo.");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to load the seeded route.");
+      } finally {
+        setLoadingRoute(false);
+      }
+      return;
+    }
+
     try {
       const nextRoute = await requestJson<RoutePlan>("/route/optimize", {
         method: "POST",
@@ -406,6 +550,7 @@ export function App() {
       });
       setRoute(nextRoute);
       setFeedbackMessage("");
+      setStatusMessage("Route updated from the live operations API.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to optimize route.");
     } finally {
@@ -418,6 +563,14 @@ export function App() {
     if (!route) {
       return;
     }
+
+    if (appMode === "demo") {
+      setFeedbackMessage(
+        "This GitHub Pages SeaSweep demo is read-only. Connect the live API deployment to save mission feedback.",
+      );
+      return;
+    }
+
     setSubmittingFeedback(true);
     setError(null);
     try {
@@ -460,6 +613,7 @@ export function App() {
       await loadImpactDashboard();
       await loadBenchmarkReport();
       setFeedbackMessage("Mission feedback saved to the impact ledger.");
+      setStatusMessage("Impact ledger updated from crew feedback.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to submit mission feedback.");
     } finally {
@@ -473,6 +627,28 @@ export function App() {
   const routeReason =
     route && typeof route.metadata.reason === "string" ? route.metadata.reason : "No recon reason supplied.";
   const winningStrategy = benchmark?.winning_strategy;
+  const isDemoMode = appMode === "demo";
+  const modeLabel = loadingHealth ? "Checking runtime" : isDemoMode ? "Pages demo mode" : "Live API mode";
+  const modeDetail = loadingHealth
+    ? "Confirming whether SeaSweep is using seeded artifacts or the live API."
+    : isDemoMode
+      ? "GitHub Pages is showing the seeded San Francisco Bay scenario so the story always works on stage."
+      : "This frontend is calling the external API directly for live forecasts, routing, and feedback writes.";
+  const apiLabel = isDemoMode ? "Seeded mission data" : apiBaseLabel(API_BASE);
+  const forecastButtonLabel = isDemoMode
+    ? loadingForecast
+      ? "Refreshing demo..."
+      : "Refresh demo scenario"
+    : loadingForecast
+      ? "Refreshing forecast..."
+      : "Run fresh forecast";
+  const optimizeRouteLabel = isDemoMode
+    ? loadingRoute
+      ? "Loading seeded route..."
+      : "Load seeded route"
+    : loadingRoute
+      ? "Optimizing..."
+      : "Optimize route";
   const readinessCards = [
     {
       label: "Forecast engine",
@@ -482,37 +658,39 @@ export function App() {
         : "Run or seed a forecast to populate the operations stack.",
     },
     {
-      label: "Route intelligence",
+      label: "Mission plan",
       value: route ? route.recommended_mode : strategyLabel(winningStrategy),
       detail: route
         ? `${route.ordered_cell_ids.length || route.alternates.length} destination(s) staged for this mission window.`
         : benchmarkSummary(benchmark),
     },
     {
-      label: "Impact loop",
+      label: "Impact ledger",
       value: impact ? `${impact.total_missions} logged mission(s)` : "Ledger warming up",
       detail: impact
         ? `${formatPercent(impact.hotspot_precision)} hotspot precision with ${impact.total_collected_kg.toFixed(1)} kg recorded.`
         : "Mission feedback will unlock precision and hit-rate reporting.",
     },
     {
-      label: "Model hook",
-      value: "Integration-ready",
-      detail: "Connector targets, benchmark comparison, and export endpoints now live on the same website.",
+      label: "Demo mode",
+      value: isDemoMode ? "Pages landing + seeded story" : "Pages landing + live API handoff",
+      detail: isDemoMode
+        ? "Seeded artifacts, read-only controls, and zero backend dependency for partner walkthroughs."
+        : "Fresh forecasts, route writes, and database-backed feedback are available in the live stack.",
     },
   ];
   const summaryCards = [
     {
       label: "Pilot region",
       value: health?.pilot_region ?? "sf_bay_estuary",
-      detail: loadingHealth ? "Checking backend status..." : "Single-region Bay operations mode.",
+      detail: loadingHealth ? "Checking runtime status..." : "San Francisco Bay pilot coverage.",
     },
     {
       label: "Top hotspot",
       value: topLine(forecast),
       detail: activeProvenance
         ? `${formatFreshness(activeProvenance.age_minutes)} | ${confidenceBand(forecast)} confidence`
-        : "Run a forecast to populate hotspot ranking.",
+        : "Load the demo or run a forecast to populate hotspot ranking.",
     },
     {
       label: "Benchmark winner",
@@ -531,6 +709,15 @@ export function App() {
         : "Impact ledger waiting for field feedback.",
     },
   ];
+  const exportLinks = isDemoMode
+    ? [
+        { href: `${import.meta.env.BASE_URL}demo/forecast.json`, label: "Forecast JSON" },
+        { href: `${import.meta.env.BASE_URL}demo/route.json`, label: "Route JSON" },
+      ]
+    : [
+        { href: `${API_BASE}/export/pdf-brief`, label: "PDF brief" },
+        { href: `${API_BASE}/export/geojson?horizon_hour=${filters.horizonHour}`, label: "GeoJSON" },
+      ];
 
   return (
     <div className="site-shell">
@@ -542,43 +729,43 @@ export function App() {
           </a>
           <nav className="site-nav" aria-label="Primary">
             <a href="#platform">Platform</a>
-            <a href="#operations">Operations</a>
-            <a href="#model-lab">Model</a>
+            <a href="#operations">Demo</a>
+            <a href="#roadmap">Roadmap</a>
             <a href="#impact">Impact</a>
           </nav>
-          <a className="button button-ghost" href="#impact">
-            Ready for integration
+          <a className="button button-ghost" href="#operations">
+            Explore the pilot
           </a>
         </header>
 
         <main id="top">
           <section className="hero section">
             <div className="hero-copy-block reveal">
-              <p className="eyebrow">Unified branch for routing, ops, and model integration</p>
-              <h1>One OceanRoute website for the full cleanup workflow.</h1>
+              <p className="eyebrow">Cleanup intelligence for public-interest fleets</p>
+              <h1>Help cleanup crews spend less time searching and more time collecting.</h1>
               <p className="lead">
-                This build brings the mission story, the working forecast and routing desk, and the model-integration
-                studio into one product surface so we can plug the next model into a single website instead of juggling
-                separate prototypes.
+                OceanRoute turns public ocean data into debris hotspot forecasts, route plans, and transparent mission
+                reporting for NGOs, port partners, and local fleets. This launch experience is built to show the full
+                cleanup workflow and stay ready for the next model handoff.
               </p>
               <div className="hero-actions">
                 <a className="button" href="#operations">
-                  Explore operations
+                  View the launch demo
                 </a>
                 <button className="button button-secondary" onClick={handleRunForecast} type="button" disabled={loadingForecast}>
-                  {loadingForecast ? "Refreshing forecast..." : "Run fresh forecast"}
+                  {forecastButtonLabel}
                 </button>
               </div>
               <div className="hero-notes">
-                <span>{health?.ingest_mode ?? "auto"} ingest</span>
-                <span>{health?.scheduler_enabled ? "scheduled forecast loop" : "manual forecast loop"}</span>
-                <span>API + website merged on one branch</span>
+                <span>24-72h hotspot forecast window</span>
+                <span>Route planning plus impact reporting</span>
+                <span>{isDemoMode ? "Hosted Pages demo" : "Live API connected"}</span>
               </div>
             </div>
 
             <div className="hero-panel-stack reveal">
               <article className="signal-card">
-                <p className="signal-label">Integration snapshot</p>
+                <p className="signal-label">Launch snapshot</p>
                 <div className="signal-grid">
                   {readinessCards.map((card) => (
                     <article key={card.label}>
@@ -593,10 +780,10 @@ export function App() {
               <article className="route-card">
                 <div className="route-card__header">
                   <div>
-                    <p className="route-kicker">From forecast to field log</p>
-                    <h2>Unified mission loop</h2>
+                    <p className="route-kicker">From hotspot to field log</p>
+                    <h2>Pilot mission preview</h2>
                   </div>
-                  <span className="status-pill status-teal">{benchmark ? strategyLabel(benchmark.winning_strategy) : "Wiring"}</span>
+                  <span className="status-pill status-teal">{isDemoMode ? "Hosted demo" : "Live stack"}</span>
                 </div>
                 <div className="route-map" aria-hidden="true">
                   <span className="route-point route-point--a"></span>
@@ -615,7 +802,7 @@ export function App() {
                   </div>
                   <div>
                     <span className="legend-swatch legend-swatch--route"></span>
-                    {route ? `${route.recommended_mode} mission plan live` : benchmarkSummary(benchmark)}
+                    {route ? `${route.recommended_mode} mission plan ready` : benchmarkSummary(benchmark)}
                   </div>
                 </div>
               </article>
@@ -632,20 +819,21 @@ export function App() {
             ))}
           </section>
 
+          {statusMessage ? <div className="message-banner message-banner-info">{statusMessage}</div> : null}
           {error ? <div className="message-banner message-banner-error">{error}</div> : null}
 
           <section id="platform" className="section">
             <div className="section-heading reveal">
-              <p className="eyebrow">Why this merge works</p>
-              <h2>Three branches now read like one coherent platform instead of parallel prototypes.</h2>
+              <p className="eyebrow">What OceanRoute delivers at launch</p>
+              <h2>A single product surface for forecasting, routing, and reporting cleanup work.</h2>
               <p>
-                The integrated website keeps the public-facing narrative understandable while preserving the operational
-                dashboard and surfacing a model-integration studio for the next phase of the product.
+                The launch site is designed to communicate the mission clearly to partners while still showing a real
+                operational workflow that can evolve with better models and richer data.
               </p>
             </div>
 
             <div className="problem-grid">
-              {PLATFORM_PILLARS.map((pillar) => (
+              {LAUNCH_PILLARS.map((pillar) => (
                 <article className="panel-card reveal" key={pillar.index}>
                   <span className="card-index">{pillar.index}</span>
                   <h3>{pillar.title}</h3>
@@ -655,10 +843,10 @@ export function App() {
             </div>
 
             <div className="comparison-grid">
-              {OPERATION_LOOP.map((step) => (
-                <article className="comparison-card reveal" key={step.label}>
-                  <h3>{step.label}</h3>
-                  <p>{step.detail}</p>
+              {PARTNER_FITS.map((item) => (
+                <article className="comparison-card reveal" key={item.label}>
+                  <h3>{item.label}</h3>
+                  <p>{item.detail}</p>
                 </article>
               ))}
             </div>
@@ -666,11 +854,11 @@ export function App() {
 
           <section id="operations" className="section section-tint">
             <div className="section-heading reveal">
-              <p className="eyebrow">Operations desk</p>
-              <h2>Forecast hotspots, shape a route, and keep trust signals visible in the same flow.</h2>
+              <p className="eyebrow">Launch demo</p>
+              <h2>Forecast hotspots, preview a route, and show the trust signals behind every recommendation.</h2>
               <p>
-                The working Bay dashboard stays intact here, but it now lives inside a calmer website shell that is
-                easier to present to partners while crews still get the controls they need.
+                This is the part partners can explore immediately. In the hosted Pages version it runs on seeded demo
+                artifacts, and in the live deployment it connects to the API for fresh runs and persisted feedback.
               </p>
             </div>
 
@@ -782,7 +970,7 @@ export function App() {
                 </div>
 
                 {forecastMissing ? (
-                  <p className="empty-state">No forecast stored yet. Run the first forecast cycle to populate the map.</p>
+                  <p className="empty-state">No hotspots match the active demo filters yet. Widen the horizon or lower the confidence floor.</p>
                 ) : null}
 
                 {forecast?.source_notes.length ? (
@@ -826,7 +1014,7 @@ export function App() {
                 <div className="workspace-header">
                   <div>
                     <h3>Mission planner</h3>
-                    <p>Optimize a single-vessel route or return a recon recommendation.</p>
+                    <p>{isDemoMode ? "Load the seeded launch route or explore the live route optimizer." : "Optimize a single-vessel route or return a recon recommendation."}</p>
                   </div>
                   <button
                     className="button button-secondary"
@@ -834,7 +1022,7 @@ export function App() {
                     type="button"
                     disabled={loadingRoute || !forecast}
                   >
-                    {loadingRoute ? "Optimizing..." : "Optimize route"}
+                    {optimizeRouteLabel}
                   </button>
                 </div>
 
@@ -950,19 +1138,19 @@ export function App() {
                     </div>
                   </>
                 ) : (
-                  <p className="empty-state">Optimize a route after loading a forecast.</p>
+                  <p className="empty-state">{isDemoMode ? "Load the seeded route to preview the launch mission." : "Optimize a route after loading a forecast."}</p>
                 )}
               </section>
             </div>
           </section>
 
-          <section id="model-lab" className="section">
+          <section id="roadmap" className="section">
             <div className="section-heading reveal">
-              <p className="eyebrow">Model integration studio</p>
-              <h2>Bring the model roadmap forward without spinning up a second website.</h2>
+              <p className="eyebrow">Model and deployment roadmap</p>
+              <h2>Launch with a stable demo surface now, then keep layering in better models and data.</h2>
               <p>
-                This section keeps the product honest about what is already operational, what connectors we still need,
-                and how the routing benchmark can guide the next model integration pass.
+                The product is already structured around the eventual model handoff. Connectors, benchmark comparison,
+                and launch-hosting choices are all visible in the same place.
               </p>
             </div>
 
@@ -971,7 +1159,7 @@ export function App() {
                 <div className="workspace-header">
                   <div>
                     <h3>Readiness rails</h3>
-                    <p>The end-to-end loop we can integrate the next model into.</p>
+                    <p>The end-to-end loop that the next model can plug into.</p>
                   </div>
                 </div>
                 <div className="readiness-grid">
@@ -1009,7 +1197,7 @@ export function App() {
                 <div className="workspace-header">
                   <div>
                     <h3>Routing benchmark</h3>
-                    <p>Compare baseline strategies before we attach a richer predictive model.</p>
+                    <p>Compare baseline strategies before attaching a richer predictive model.</p>
                   </div>
                   <span className="status-pill status-foam">
                     {benchmark ? `Winner: ${strategyLabel(benchmark.winning_strategy)}` : "Awaiting benchmark"}
@@ -1069,16 +1257,30 @@ export function App() {
                   <code>/api/export/pdf-brief</code>
                 </div>
               </section>
+
+              <section className="workspace-card">
+                <div className="workspace-header">
+                  <div>
+                    <h3>Launch hosting path</h3>
+                    <p>How the launch site is packaged today and how it grows into the live stack.</p>
+                  </div>
+                </div>
+                <ul className="priority-list">
+                  {HOSTING_NOTES.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </section>
             </div>
           </section>
 
           <section id="impact" className="section section-tint">
             <div className="section-heading reveal">
-              <p className="eyebrow">Impact and feedback</p>
+              <p className="eyebrow">Impact and reporting</p>
               <h2>Keep mission verification, sponsor reporting, and future model tuning in one ledger.</h2>
               <p>
-                This is where operations becomes learning. Field crews log what they actually found, and the same data
-                powers both impact reporting and the next round of model improvement.
+                This is where operations becomes learning. Field teams can verify what they found, while the same data
+                powers impact reporting and the next round of model improvement.
               </p>
             </div>
 
@@ -1090,6 +1292,12 @@ export function App() {
                     <p>Write back what the crew found so the forecast and impact ledger can learn.</p>
                   </div>
                 </div>
+                {isDemoMode ? (
+                  <p className="workspace-note">
+                    The GitHub Pages launch demo is read-only. Use the live API deployment to save feedback and write to
+                    the impact ledger.
+                  </p>
+                ) : null}
                 <form className="feedback-form" onSubmit={handleSubmitFeedback}>
                   <label>
                     Found status
@@ -1163,8 +1371,8 @@ export function App() {
                       onChange={(event) => setFeedback((current) => ({ ...current, note: event.target.value }))}
                     />
                   </label>
-                  <button className="button" type="submit" disabled={!route || submittingFeedback}>
-                    {submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
+                  <button className="button" type="submit" disabled={isDemoMode || !route || submittingFeedback}>
+                    {isDemoMode ? "Read-only in launch demo" : submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
                   </button>
                   {feedbackMessage ? <p className="message-banner message-banner-success">{feedbackMessage}</p> : null}
                 </form>
@@ -1209,12 +1417,11 @@ export function App() {
                   <div>
                     <h4>Mission exports</h4>
                     <p className="export-links">
-                      <a href={`${API_BASE}/export/pdf-brief`} target="_blank" rel="noreferrer">
-                        PDF brief
-                      </a>
-                      <a href={`${API_BASE}/export/geojson?horizon_hour=${filters.horizonHour}`} target="_blank" rel="noreferrer">
-                        GeoJSON
-                      </a>
+                      {exportLinks.map((link) => (
+                        <a href={link.href} key={link.label} target="_blank" rel="noreferrer">
+                          {link.label}
+                        </a>
+                      ))}
                     </p>
                   </div>
                 </div>
@@ -1224,8 +1431,8 @@ export function App() {
         </main>
 
         <footer className="site-footer">
-          <p>Unified integration branch blending the mission story, the live operations desk, and the model roadmap.</p>
-          <p>Built for one future model hook instead of three competing web surfaces.</p>
+          <p>OceanRoute is built to launch as a shareable static demo now and grow into a live cleanup operations stack.</p>
+          <p>{isDemoMode ? "This hosted view is using seeded artifacts from the San Francisco Bay pilot scenario." : "This view is connected to the live API-backed pilot stack."}</p>
         </footer>
       </div>
     </div>

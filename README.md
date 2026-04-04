@@ -20,9 +20,9 @@ Regional floating-debris response support for the San Francisco Bay pilot. The s
 
 - Python 3.11
 - Docker Desktop with `docker compose`
-- Node `20.19.x`
+- Node `20.19+` on Node 20
 
-The repo now enforces Node `20.19.x` with:
+The repo now expects Node `20.19+` on Node 20 with:
 
 - repo-root `.nvmrc`
 - `engines.node` in the root and web workspace `package.json`
@@ -39,7 +39,7 @@ py -3.11 -m venv .venv
 pip install -r apps\api\requirements.txt
 ```
 
-2. Install frontend deps under Node `20.19.x`:
+2. Install frontend deps under Node `20.19+` on Node 20:
 
 ```powershell
 cd C:\Users\clewr\Catapult-2026
@@ -89,6 +89,29 @@ npm run dev:web
 ```
 
 The Vite dev server proxies `/api` to `http://localhost:8000`.
+
+## GitHub Pages launch build
+
+GitHub Pages cannot host the FastAPI backend, so the Pages build runs in a static demo mode backed by seeded JSON artifacts under `apps/web/public/demo`.
+
+Local GitHub Pages-style build:
+
+```bash
+cd /Users/kruz/GithubRepos/Catapult-2026
+env PATH=/opt/homebrew/opt/node@20/bin:$PATH \
+  VITE_STATIC_DEMO=true \
+  VITE_BASE_PATH=/Catapult-2026/ \
+  npm run build --workspace apps/web
+```
+
+Preview that static build locally:
+
+```bash
+cd /Users/kruz/GithubRepos/Catapult-2026/apps/web
+env PATH=/opt/homebrew/opt/node@20/bin:$PATH npm run preview
+```
+
+The included GitHub Actions workflow in `.github/workflows/deploy-pages.yml` builds this same static demo and deploys it to GitHub Pages. It triggers automatically on pushes to `main` and can also be run manually with `workflow_dispatch`.
 
 ## One-command forecast run
 
