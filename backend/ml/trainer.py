@@ -14,7 +14,10 @@ from ingest.fetch_copernicus import (
     CopernicusSyncError,
     default_copernicus_directory,
     parse_copernicus_notes,
-    sync_copernicus_defaults,
+    sync_copernicus_currents,
+    sync_copernicus_monthly_training,
+    sync_copernicus_salinity,
+    sync_copernicus_temperature,
 )
 from ingest.real_training_data import (
     DEFAULT_SOCAT_ERDDAP_URL,
@@ -46,9 +49,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("oceanpulse.ml")
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
+RECOMMENDED_COPERNICUS_CURRENTS_DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m"
+RECOMMENDED_COPERNICUS_SALINITY_DATASET = "cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m"
+RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET = "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m"
 DEFAULT_COPERNICUS_NOTES = (
-    "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;"
-    "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;"
+    f"currents_dataset_id={RECOMMENDED_COPERNICUS_CURRENTS_DATASET};"
+    f"salinity_dataset_id={RECOMMENDED_COPERNICUS_SALINITY_DATASET};"
+    f"temperature_dataset_id={RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET};"
     "path=Training_Data/Copernicus"
 )
 
@@ -134,6 +141,28 @@ REAL_DATA_APIS = [
 ]
 
 
+def _normalize_copernicus_training_notes(notes: dict[str, str]) -> dict[str, str]:
+    normalized = dict(notes)
+    monthly_dataset_id = normalized.get("monthly_physics_dataset_id", "").strip()
+    if "PT1H" in monthly_dataset_id or "PT6H" in monthly_dataset_id:
+        normalized.pop("monthly_physics_dataset_id", None)
+
+    normalized.setdefault(
+        "currents_dataset_id",
+        os.getenv("COPERNICUS_CURRENTS_DATASET_ID", "").strip() or RECOMMENDED_COPERNICUS_CURRENTS_DATASET,
+    )
+    normalized.setdefault(
+        "salinity_dataset_id",
+        os.getenv("COPERNICUS_SALINITY_DATASET_ID", "").strip() or RECOMMENDED_COPERNICUS_SALINITY_DATASET,
+    )
+    normalized.setdefault(
+        "temperature_dataset_id",
+        os.getenv("COPERNICUS_TEMPERATURE_DATASET_ID", "").strip() or RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET,
+    )
+    normalized.setdefault("path", "Training_Data/Copernicus")
+    return normalized
+
+
 @dataclass
 class TrainingState:
     status: str = "idle"
@@ -205,6 +234,9 @@ class MLTrainerService:
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
         self.atmospheric_lookup: dict[tuple[int, int], float] = {}
+        self._spatial_model = None
+        self._spatial_model_meta = None
+        self._spatial_model_cache_key = None
         self.api_registry = []
         for item in REAL_DATA_APIS:
             configured = dict(item)
@@ -273,6 +305,48 @@ class MLTrainerService:
     def get_status(self):
         with self._lock:
             return self.state.snapshot()
+
+    def expected_month_window(self) -> int:
+        checkpoint_path = CHECKPOINT_DIR / "oceanpulse_latest.pt"
+        if checkpoint_path.exists() and torch is not None:
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                return int(checkpoint.get("month_window", self.state.config.get("month_window", 12)))
+            except Exception:
+                return int(self.state.config.get("month_window", 12))
+        return int(self.state.config.get("month_window", 12))
+
+    def _load_spatial_model(self):
+        if torch is None or OceanPulseLSTM is None:
+            raise RealDataLoadError(
+                "PyTorch spatial inference dependencies are not installed. Run `pip install -r backend/requirements-ml-ingest.txt`."
+            )
+        checkpoint_path = Path(
+            self.state.model_summary.get("checkpoint_path") or (CHECKPOINT_DIR / "oceanpulse_latest.pt")
+        )
+        if not checkpoint_path.exists():
+            raise RealDataLoadError(f"Checkpoint not found at {checkpoint_path}. Train the model first.")
+        cache_key = (str(checkpoint_path), checkpoint_path.stat().st_mtime_ns)
+        if self._spatial_model is not None and self._spatial_model_cache_key == cache_key:
+            return self._spatial_model, self._spatial_model_meta
+
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        feature_names = checkpoint.get("feature_names", self.state.model_summary.get("features", []))
+        model = OceanPulseLSTM(in_channels=len(feature_names))
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+        self._spatial_model = model
+        self._spatial_model_meta = checkpoint
+        self._spatial_model_cache_key = cache_key
+        return model, checkpoint
+
+    def predict_spatial_sequence(self, feature_sequence: np.ndarray, atmospheric_co2: float) -> np.ndarray:
+        model, _ = self._load_spatial_model()
+        with torch.no_grad():
+            x_tensor = torch.tensor(feature_sequence[None, ...], dtype=torch.float32)
+            atm_tensor = torch.tensor([[atmospheric_co2]], dtype=torch.float32)
+            prediction = model(x_tensor, atm_tensor)
+        return prediction[0, 0].detach().cpu().numpy()
 
     def start_training(self, config: dict | None = None):
         with self._lock:
@@ -405,7 +479,9 @@ class MLTrainerService:
                     "samples": int(len(X)),
                 }
             copernicus_config = self._config_by_id("copernicus_marine")
-            copernicus_notes = parse_copernicus_notes((copernicus_config or {}).get("notes", ""))
+            copernicus_notes = _normalize_copernicus_training_notes(
+                parse_copernicus_notes((copernicus_config or {}).get("notes", ""))
+            )
             copernicus_path = (
                 copernicus_notes.get("path", "").strip()
                 or os.getenv("COPERNICUS_LOCAL_PATH", "").strip()
@@ -415,14 +491,48 @@ class MLTrainerService:
             if not copernicus_dir.is_absolute():
                 copernicus_dir = default_copernicus_directory().parents[1] / copernicus_dir
             if copernicus_config and copernicus_config.get("enabled") and not copernicus_dir.exists():
+                sync_months = max(6, min(config["month_window"] + 2, 15))
                 with self._lock:
                     self.state.metrics = {
                         **self.state.metrics,
                         "stage": "syncing_copernicus",
-                        "detail": f"Copernicus directory missing. Attempting live sync into {copernicus_dir}.",
+                        "detail": (
+                            f"Copernicus directory missing. Syncing monthly training grids only "
+                            f"for the last {sync_months} months into {copernicus_dir}."
+                        ),
                     }
                 try:
-                    sync_copernicus_defaults(overrides=copernicus_notes)
+                    sync_steps = [
+                        ("currents", sync_copernicus_currents),
+                        ("salinity", sync_copernicus_salinity),
+                        ("temperature", sync_copernicus_temperature),
+                    ]
+                    for step_index, (label, sync_fn) in enumerate(sync_steps, start=1):
+                        with self._lock:
+                            self.state.progress = 0.1 + (step_index - 1) * 0.06
+                            self.state.metrics = {
+                                **self.state.metrics,
+                                "stage": "syncing_copernicus",
+                                "detail": f"Downloading Copernicus {label} grid ({step_index} of {len(sync_steps)}).",
+                                "download_progress": {
+                                    "completed": step_index - 1,
+                                    "total": len(sync_steps),
+                                    "current": label,
+                                },
+                            }
+                        sync_fn(months=sync_months, overrides=copernicus_notes)
+                    with self._lock:
+                        self.state.progress = 0.28
+                        self.state.metrics = {
+                            **self.state.metrics,
+                            "stage": "syncing_copernicus",
+                            "detail": f"Downloaded {len(sync_steps)} Copernicus monthly grids into {copernicus_dir}.",
+                            "download_progress": {
+                                "completed": len(sync_steps),
+                                "total": len(sync_steps),
+                                "current": "complete",
+                            },
+                        }
                 except CopernicusSyncError as exc:
                     raise RealDataLoadError(
                         f"Copernicus data is required for tensor training and live sync failed: {exc}"

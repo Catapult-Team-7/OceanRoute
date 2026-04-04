@@ -4,7 +4,9 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from ingest.real_training_data import RealDataLoadError
 from .models import AnomalyRecord, ForecastPoint, ForecastResponse, FluxPoint
+from .real_products import build_real_grid_bundle, build_real_point_bundle
 from ml.trainer import MLTrainerService
 
 
@@ -22,6 +24,12 @@ class DemoOceanRepository:
 
     def __post_init__(self):
         self.trainer = MLTrainerService(self)
+        self.last_grid_metadata = {
+            "verified_map": False,
+            "map_source": "synthetic_demo_grid",
+            "source_summary": "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+        }
+        self.last_real_anomalies: list[AnomalyRecord] = []
 
     def _monthly_timestamp(self, date_str: str | None) -> datetime:
         if not date_str:
@@ -81,6 +89,35 @@ class DemoOceanRepository:
         ]
 
     def get_flux_grid(self, date: str | None, resolution: str, region: str) -> list[FluxPoint]:
+        noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
+        socat_config = self.trainer._config_by_id("socat") or {}
+        era_config = self.trainer._config_by_id("era5") or {}
+        copernicus_config = self.trainer._config_by_id("copernicus_marine") or {}
+        try:
+            real_bundle = build_real_grid_bundle(
+                date=date,
+                resolution=resolution,
+                region=region,
+                trainer=self.trainer,
+                socat_url=str(socat_config.get("url", "")).strip(),
+                noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+                era_directory=str(era_config.get("notes", "")).strip(),
+                copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
+                if "path=" in str(copernicus_config.get("notes", ""))
+                else str(copernicus_config.get("notes", "")).strip(),
+                reference_now=self.now,
+            )
+            self.last_grid_metadata = real_bundle.metadata
+            self.last_real_anomalies = real_bundle.anomalies
+            return real_bundle.rows
+        except RealDataLoadError:
+            self.last_grid_metadata = {
+                "verified_map": False,
+                "map_source": "synthetic_demo_grid",
+                "source_summary": "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+            }
+            self.last_real_anomalies = []
+
         timestamp = self._monthly_timestamp(date)
         step = {
             "0.25deg": 10,
@@ -121,11 +158,33 @@ class DemoOceanRepository:
         return rows
 
     def get_recent_anomalies(self, threshold: float, limit: int, date: str | None = None) -> list[AnomalyRecord]:
+        if self.last_grid_metadata.get("verified_map") and self.last_real_anomalies:
+            anomalies = [a for a in self.last_real_anomalies if a.anomaly_score >= threshold]
+            return anomalies[:limit]
         timestamp = self._monthly_timestamp(date)
         anomalies = [a for a in self._anomaly_hotspots(timestamp) if a.anomaly_score >= threshold]
         return anomalies[:limit]
 
     def get_point_forecast(self, lat: float, lon: float, horizon_hours: int) -> ForecastResponse:
+        noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
+        era_config = self.trainer._config_by_id("era5") or {}
+        copernicus_config = self.trainer._config_by_id("copernicus_marine") or {}
+        try:
+            point_bundle = build_real_point_bundle(
+                lat=lat,
+                lon=lon,
+                horizon_hours=horizon_hours,
+                trainer=self.trainer,
+                noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+                era_directory=str(era_config.get("notes", "")).strip(),
+                copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
+                if "path=" in str(copernicus_config.get("notes", ""))
+                else str(copernicus_config.get("notes", "")).strip(),
+            )
+            return point_bundle.forecast
+        except RealDataLoadError:
+            pass
+
         current = self._base_flux(lat, lon, self.now)
         steps = [hours for hours in (24, 48, 72) if hours <= max(horizon_hours, 24)]
         forecast: list[ForecastPoint] = []
@@ -157,9 +216,30 @@ class DemoOceanRepository:
                 "lon": strongest_sink.lon,
                 "flux": strongest_sink.co2_flux,
             },
+            "verified_map": self.last_grid_metadata.get("verified_map", False),
+            "map_source": self.last_grid_metadata.get("map_source", "synthetic_demo_grid"),
         }
 
     def get_point_history(self, lat: float, lon: float, months: int = 12) -> list[dict]:
+        noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
+        era_config = self.trainer._config_by_id("era5") or {}
+        copernicus_config = self.trainer._config_by_id("copernicus_marine") or {}
+        try:
+            point_bundle = build_real_point_bundle(
+                lat=lat,
+                lon=lon,
+                horizon_hours=72,
+                trainer=self.trainer,
+                noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+                era_directory=str(era_config.get("notes", "")).strip(),
+                copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
+                if "path=" in str(copernicus_config.get("notes", ""))
+                else str(copernicus_config.get("notes", "")).strip(),
+            )
+            return point_bundle.history[-months:]
+        except RealDataLoadError:
+            pass
+
         items = []
         for offset in range(months - 1, -1, -1):
             ts = (self.now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30 * offset))

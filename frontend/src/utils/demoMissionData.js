@@ -159,8 +159,9 @@ export const HACKATHON_API_DEFAULTS = [
     url: "https://marine.copernicus.eu",
     env_var: "COPERNICUS_MARINE_URL",
     notes:
-      "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
-      "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+      "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
+      "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
+      "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
       "path=Training_Data/Copernicus",
   },
   {

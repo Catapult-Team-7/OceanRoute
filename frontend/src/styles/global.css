@@ -336,6 +336,71 @@ input {
   font-size: 1.4rem;
 }
 
+.metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-hint {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+}
+
+.info-hint-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: #062034;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: linear-gradient(180deg, #84f0f0, #59c3c3);
+  border-radius: 999px;
+  box-shadow: 0 4px 10px rgba(89, 195, 195, 0.22);
+}
+
+.info-hint-tooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 6;
+  display: grid;
+  gap: 6px;
+  width: min(280px, 60vw);
+  padding: 10px 12px;
+  color: #dfeaf5;
+  background: rgba(3, 16, 30, 0.94);
+  border: 1px solid rgba(146, 184, 224, 0.18);
+  border-radius: 14px;
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.24);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.info-hint-tooltip strong {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.info-hint-tooltip span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.info-hint:hover .info-hint-tooltip,
+.info-hint:focus-within .info-hint-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .anomaly-card {
   text-align: left;
   color: inherit;
@@ -419,6 +484,11 @@ input {
 .ml-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.9fr);
+  gap: 18px;
+}
+
+.progress-layout {
+  display: grid;
   gap: 18px;
 }
 
@@ -514,6 +584,30 @@ input {
   background: rgba(10, 29, 49, 0.85);
   border: 1px solid rgba(146, 184, 224, 0.12);
   border-radius: 18px;
+}
+
+.progress-timeline,
+.progress-connectors {
+  display: grid;
+  gap: 12px;
+}
+
+.progress-timeline {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.progress-card {
+  padding: 14px;
+  background: rgba(10, 29, 49, 0.85);
+  border: 1px solid rgba(146, 184, 224, 0.12);
+  border-radius: 18px;
+}
+
+.progress-card strong {
+  display: block;
+  margin: 8px 0 6px;
+  font-size: 1.2rem;
 }
 
 .api-config-grid {

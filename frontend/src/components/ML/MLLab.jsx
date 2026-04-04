@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
 import { HACKATHON_API_DEFAULTS } from "../../utils/demoMissionData";
 
@@ -187,8 +188,9 @@ export default function MLLab() {
               api.id === "era5"
                 ? "Training_Data/ERA"
                 : api.id === "copernicus_marine"
-                  ? "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
-                    "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                  ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
+                    "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
+                    "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
                     "path=Training_Data/Copernicus"
                   : api.notes,
           };
@@ -210,8 +212,9 @@ export default function MLLab() {
             api.id === "era5"
               ? "Training_Data/ERA"
               : api.id === "copernicus_marine"
-                ? "monthly_physics_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
-                  "routing_dataset_id=cmems_mod_glo_phy_anfc_0.083deg_PT1H-m;" +
+                ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
+                  "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
+                  "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
                   "path=Training_Data/Copernicus"
                 : api.notes,
         };
@@ -369,21 +372,42 @@ export default function MLLab() {
           </p>
           <div className="ml-metrics-grid">
             <article className="ml-metric-card">
-              <span>Epoch</span>
+              <span className="metric-label">
+                Epoch
+                <InfoHint label="Epoch" description="One full pass through the current training dataset." />
+              </span>
               <strong>
                 {status?.current_epoch || 0}/{status?.total_epochs || form.epochs}
               </strong>
             </article>
             <article className="ml-metric-card">
-              <span>Validation loss</span>
+              <span className="metric-label">
+                Validation loss
+                <InfoHint
+                  label="Validation loss"
+                  description="Out-of-sample loss on held-back validation tensors. Lower is generally better."
+                />
+              </span>
               <strong>{status?.metrics?.val_loss ?? "--"}</strong>
             </article>
             <article className="ml-metric-card">
-              <span>MAE</span>
+              <span className="metric-label">
+                MAE
+                <InfoHint
+                  label="MAE"
+                  description="Mean absolute error between predicted and target flux values on validation data."
+                />
+              </span>
               <strong>{status?.metrics?.mae ?? "--"}</strong>
             </article>
             <article className="ml-metric-card">
-              <span>R²</span>
+              <span className="metric-label">
+                R²
+                <InfoHint
+                  label="R²"
+                  description="Explained variance score on validation data. Closer to 1 means the model explains more of the target variance."
+                />
+              </span>
               <strong>{status?.metrics?.r2 ?? "--"}</strong>
             </article>
           </div>

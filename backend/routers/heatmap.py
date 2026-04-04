@@ -21,7 +21,15 @@ async def heatmap(
     rows = await get_flux_grid(repo, date=date, resolution=resolution, region=region)
     features = []
     for row in rows:
-        ml_scores = repo.trainer.score_row(row)
+        if row.predicted_flux is not None:
+            ml_scores = {
+                "predicted_flux": row.predicted_flux,
+                "observed_flux": row.observed_flux if row.observed_flux is not None else row.predicted_flux,
+                "weakening_score": row.weakening_score or 0.0,
+                "route_priority": row.route_priority or 0.0,
+            }
+        else:
+            ml_scores = repo.trainer.score_row(row)
         features.append(
             FluxFeature(
                 geometry=FeatureGeometry(coordinates=(row.lon, row.lat)),
@@ -41,15 +49,20 @@ async def heatmap(
     sink_area_pct = sum(1 for feature in features if feature.properties.flux < 0) / max(len(features), 1) * 100
     return HeatmapResponse(
         metadata=HeatmapMetadata(
-            date=date or request.app.state.repo.now.strftime("%Y-%m"),
+            date=repo.last_grid_metadata.get("date", date or request.app.state.repo.now.strftime("%Y-%m")),
             units="mol CO2/m²/yr",
             mean_flux=round(mean_flux, 3),
             sink_area_pct=round(sink_area_pct, 1),
-            inference_mode=repo.trainer.state.model_summary.get("mode", "demo_regression"),
-            trained_model_ready=repo.trainer.state.model_ready,
-            verified_map=False,
-            map_source="synthetic_demo_grid",
-            source_summary="Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+            inference_mode=repo.last_grid_metadata.get(
+                "inference_mode", repo.trainer.state.model_summary.get("mode", "demo_regression")
+            ),
+            trained_model_ready=repo.last_grid_metadata.get("trained_model_ready", repo.trainer.state.model_ready),
+            verified_map=repo.last_grid_metadata.get("verified_map", False),
+            map_source=repo.last_grid_metadata.get("map_source", "synthetic_demo_grid"),
+            source_summary=repo.last_grid_metadata.get(
+                "source_summary",
+                "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+            ),
         ),
         features=features,
     )

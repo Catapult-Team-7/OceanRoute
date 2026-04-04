@@ -13,6 +13,7 @@ import { useOceanStore } from "./store/oceanStore";
 
 const OceanMap = lazy(() => import("./components/Map/OceanMap"));
 const MLLab = lazy(() => import("./components/ML/MLLab"));
+const ProgressDashboard = lazy(() => import("./components/ML/ProgressDashboard"));
 
 export default function App() {
   useWebSocket();
@@ -44,10 +45,16 @@ export default function App() {
             <Sidebar />
           </main>
         </>
-      ) : (
+      ) : currentView === "ml" ? (
         <main className="ml-page">
           <Suspense fallback={null}>
             <MLLab />
+          </Suspense>
+        </main>
+      ) : (
+        <main className="ml-page">
+          <Suspense fallback={null}>
+            <ProgressDashboard />
           </Suspense>
         </main>
       )}

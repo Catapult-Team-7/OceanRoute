@@ -12,6 +12,10 @@ class FluxPoint(BaseModel):
     wind_speed: float
     chl_a: float
     anomaly_score: float = 0.0
+    observed_flux: float | None = None
+    predicted_flux: float | None = None
+    weakening_score: float | None = None
+    route_priority: float | None = None
     timestamp: datetime
     source: str = "MODEL"
 
@@ -61,7 +65,7 @@ class FeatureGeometry(BaseModel):
 
 class FeatureProperties(BaseModel):
     flux: float
-    observed_flux: float
+    observed_flux: float | None = None
     predicted_flux: float
     sst: float
     anomaly_score: float

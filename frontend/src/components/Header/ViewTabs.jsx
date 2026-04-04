@@ -3,6 +3,7 @@ import { useOceanStore } from "../../store/oceanStore";
 const VIEWS = [
   { id: "mission", label: "Mission Map" },
   { id: "ml", label: "ML Lab" },
+  { id: "progress", label: "Progress" },
 ];
 
 export default function ViewTabs() {

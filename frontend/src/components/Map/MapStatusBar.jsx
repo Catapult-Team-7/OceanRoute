@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 
 import { useOceanStore } from "../../store/oceanStore";
+import InfoHint from "../common/InfoHint";
 
 export default function MapStatusBar() {
   const heatmapData = useOceanStore((state) => state.heatmapData);
@@ -27,27 +28,60 @@ export default function MapStatusBar() {
   return (
     <div className="map-status-bar">
       <div className="map-status-chip">
-        <strong>{summary.verifiedMap ? "Verified map" : "Map status"}</strong>
+        <strong className="metric-label">
+          {summary.verifiedMap ? "Verified map" : "Map status"}
+          <InfoHint
+            label="Map status"
+            description="Tells you whether the visible geospatial layer comes from verified gridded data or from a non-production demo grid. Right now it stays unverified until the real spatial ingest is wired."
+          />
+        </strong>
         <span>{summary.mode}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Region</strong>
+        <strong className="metric-label">
+          Region
+          <InfoHint label="Region" description="Current ocean basin filter applied to the map and sidebar summaries." />
+        </strong>
         <span>{selectedRegion}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Source</strong>
+        <strong className="metric-label">
+          Source
+          <InfoHint
+            label="Source"
+            description="Backend source for the map layer. This should ultimately identify the live gridded data product powering the visible ocean overlays."
+          />
+        </strong>
         <span>{summary.mapSource}</span>
       </div>
       <div className="map-status-chip">
-        <strong>ML</strong>
+        <strong className="metric-label">
+          ML
+          <InfoHint
+            label="ML"
+            description="Shows whether the training pipeline has produced a usable model checkpoint. It is separate from map verification."
+          />
+        </strong>
         <span>{summary.modelReady ? "trained" : "not trained"}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Alerts</strong>
+        <strong className="metric-label">
+          Alerts
+          <InfoHint
+            label="Alerts"
+            description="Count of anomaly regions where observed or predicted sink behavior deviates from baseline expectations enough to surface an alert."
+          />
+        </strong>
         <span>{summary.verifiedMap ? `${summary.anomalyCount} active anomalies` : "hidden until verified"}</span>
       </div>
       <div className="map-status-chip">
-        <strong>Overlays</strong>
+        <strong className="metric-label">
+          Overlays
+          <InfoHint
+            label="Overlays"
+            description="Quick summary of visible sink cells, strongest weakening score, and top routing priority from the current map response."
+          />
+        </strong>
         <span>
           {summary.verifiedMap
             ? `${summary.sinkCells} sinks · ${summary.maxWeakening.toFixed(2)} weakening · ${summary.topRoutePriority.toFixed(2)} routing`
