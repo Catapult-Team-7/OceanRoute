@@ -10,9 +10,9 @@ import type {
 
 export const STATIC_DEMO = import.meta.env.VITE_STATIC_DEMO === "true";
 export const DEMO_NOTICE =
-  "Hosted demo mode is using seeded San Francisco Bay artifacts and is read-only on GitHub Pages.";
+  "Hosted SeaSweep demo mode is using seeded San Francisco Bay artifacts and is read-only on GitHub Pages.";
 export const FALLBACK_NOTICE =
-  "The live API is unavailable right now, so the site has switched to the seeded San Francisco Bay launch demo.";
+  "The live API is unavailable right now, so SeaSweep has switched to the seeded San Francisco Bay demo scenario.";
 
 export interface DemoFilters {
   horizonHour: number;

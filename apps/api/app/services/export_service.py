@@ -47,7 +47,7 @@ def build_pdf_brief_bytes(snapshot: ForecastSnapshot) -> bytes:
         )
     summary_text = "\\n".join(top_lines) if top_lines else "No hotspots available."
     text = (
-        f"OceanRoute Mission Brief\\n"
+        f"SeaSweep Mission Brief\\n"
         f"Run: {snapshot.run_id}\\n"
         f"Region: {snapshot.pilot_region}\\n"
         f"Generated: {snapshot.generated_at.isoformat()}\\n"

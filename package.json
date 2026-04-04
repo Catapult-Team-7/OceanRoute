@@ -1,5 +1,5 @@
 {
-  "name": "oceanroute",
+  "name": "seasweep",
   "private": true,
   "engines": {
     "node": ">=20.19 <21"

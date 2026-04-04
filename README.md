@@ -1,6 +1,6 @@
-# OceanRoute v1
+# SeaSweep v1
 
-Regional floating-debris response support for the San Francisco Bay pilot. The stack is a FastAPI backend plus a React/Leaflet operator dashboard. Forecasts combine:
+SeaSweep is a floating-debris response platform for the San Francisco Bay pilot. The stack is a FastAPI backend plus a React/Leaflet operator dashboard built around a simple hackathon story: predict debris, plan a route, and prove impact in one place. Forecasts combine:
 
 - NOAA-style ingest with live-first plus sample fallback
 - deterministic drift baseline
@@ -27,6 +27,13 @@ The repo now expects Node `20.19+` on Node 20 with:
 - repo-root `.nvmrc`
 - `engines.node` in the root and web workspace `package.json`
 - fail-fast Node version checks on web `dev`, `build`, and `test`
+
+## Hackathon demo strategy
+
+- GitHub Pages is the public landing area and the always-working seeded judge demo.
+- The live API runs on another host and powers fresh forecasts, route optimization, and feedback writes.
+- The same frontend can do both depending on `VITE_STATIC_DEMO` and `VITE_API_BASE`.
+- API settings still use the legacy `OCEANROUTE_*` env prefix for now to avoid breaking local setup.
 
 ## Windows local setup
 
@@ -90,16 +97,27 @@ npm run dev:web
 
 The Vite dev server proxies `/api` to `http://localhost:8000`.
 
-## GitHub Pages launch build
+## GitHub Pages and live API builds
 
-GitHub Pages cannot host the FastAPI backend, so the Pages build runs in a static demo mode backed by seeded JSON artifacts under `apps/web/public/demo`.
+GitHub Pages cannot host the FastAPI backend, so the default Pages build runs in a static demo mode backed by seeded JSON artifacts under `apps/web/public/demo`.
 
-Local GitHub Pages-style build:
+Local GitHub Pages seeded-demo build:
 
 ```bash
 cd /Users/kruz/GithubRepos/Catapult-2026
 env PATH=/opt/homebrew/opt/node@20/bin:$PATH \
   VITE_STATIC_DEMO=true \
+  VITE_BASE_PATH=/Catapult-2026/ \
+  npm run build --workspace apps/web
+```
+
+Local GitHub Pages build pointed at a live test API:
+
+```bash
+cd /Users/kruz/GithubRepos/Catapult-2026
+env PATH=/opt/homebrew/opt/node@20/bin:$PATH \
+  VITE_STATIC_DEMO=false \
+  VITE_API_BASE=https://api-test.example.com/api \
   VITE_BASE_PATH=/Catapult-2026/ \
   npm run build --workspace apps/web
 ```
@@ -111,7 +129,12 @@ cd /Users/kruz/GithubRepos/Catapult-2026/apps/web
 env PATH=/opt/homebrew/opt/node@20/bin:$PATH npm run preview
 ```
 
-The included GitHub Actions workflow in `.github/workflows/deploy-pages.yml` builds this same static demo and deploys it to GitHub Pages. It triggers automatically on pushes to `main` and can also be run manually with `workflow_dispatch`.
+If the API is running on another origin, set `OCEANROUTE_CORS_ALLOWED_ORIGINS` on the backend to include your Pages origin, for example `https://<user>.github.io`.
+
+The included GitHub Actions workflow in `.github/workflows/deploy-pages.yml` deploys the seeded demo automatically on pushes to `main`. It can also be run manually with `workflow_dispatch` in either:
+
+- `demo` mode for the stable seeded Pages experience
+- `live` mode with an `api_base` input for a Pages build that calls your hosted test API directly
 
 ## One-command forecast run
 
@@ -129,14 +152,15 @@ cd C:\Users\clewr\Catapult-2026
 powershell -ExecutionPolicy Bypass -File infra\windows\register-forecast-task.ps1 -IntervalMinutes 60
 ```
 
-## Seeded mission walkthrough
+## Judge demo walkthrough
 
-After running `scripts\seed-sample-data.ps1`, the canonical demo flow is already loaded into the DB. Open the UI and review:
+After running `scripts\seed-sample-data.ps1`, the canonical demo flow is already loaded into the DB. Open the UI and walk judges through:
 
-- forecast trust summary on the operations map
-- top hotspot ranking and exports
-- route summary with linked forecast provenance
-- impact ledger metrics
+- `Predict`: forecast trust summary on the operations map
+- `Plan`: top hotspot ranking, route summary, and linked forecast provenance
+- `Prove`: mission feedback and impact ledger metrics
+
+That gives you a complete ML plus full-stack loop without relying on live retraining during the presentation.
 
 Useful API endpoints for the walkthrough:
 

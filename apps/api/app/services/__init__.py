@@ -1,2 +1,1 @@
-"""Domain services for OceanRoute."""
-
+"""Domain services for SeaSweep."""

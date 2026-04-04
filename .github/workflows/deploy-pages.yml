@@ -1,10 +1,23 @@
-name: Deploy GitHub Pages
+name: Deploy SeaSweep Pages
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      deployment_mode:
+        description: "Build the seeded demo or point Pages at a live test API"
+        required: true
+        default: demo
+        type: choice
+        options:
+          - demo
+          - live
+      api_base:
+        description: "Public API base URL for live builds, for example https://api-test.example.com/api"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,10 +48,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build static demo
+      - name: Validate live API input
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deployment_mode == 'live' && github.event.inputs.api_base == '' }}
+        run: |
+          echo "api_base is required when deployment_mode is set to live." >&2
+          exit 1
+
+      - name: Build SeaSweep site
         run: npm run build --workspace apps/web
         env:
-          VITE_STATIC_DEMO: "true"
+          VITE_STATIC_DEMO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deployment_mode == 'live' && 'false' || 'true' }}
+          VITE_API_BASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deployment_mode == 'live' && github.event.inputs.api_base || '' }}
           VITE_BASE_PATH: "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact

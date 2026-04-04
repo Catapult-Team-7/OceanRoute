@@ -1,2 +1,1 @@
-"""OceanRoute API package."""
-
+"""SeaSweep API package."""

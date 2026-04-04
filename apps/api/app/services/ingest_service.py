@@ -326,7 +326,7 @@ def _fetch_live_current_series(
         "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter",
         {
             "product": "currents_predictions",
-            "application": "OceanRoute",
+            "application": "SeaSweep",
             "station": station["id"],
             "begin_date": generated_at.strftime("%Y%m%d"),
             "end_date": (generated_at + timedelta(hours=horizon_hours + 12)).strftime("%Y%m%d"),
@@ -346,7 +346,7 @@ def _fetch_latest_wind(client: httpx.Client, station_id: str) -> dict[str, Any]:
         "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter",
         {
             "product": "wind",
-            "application": "OceanRoute",
+            "application": "SeaSweep",
             "date": "latest",
             "station": station_id,
             "time_zone": "gmt",
@@ -362,7 +362,7 @@ def _fetch_latest_water_temperature(client: httpx.Client, station_id: str) -> di
         "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter",
         {
             "product": "water_temperature",
-            "application": "OceanRoute",
+            "application": "SeaSweep",
             "date": "latest",
             "station": station_id,
             "time_zone": "gmt",

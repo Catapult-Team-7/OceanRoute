@@ -723,9 +723,9 @@ export function App() {
     <div className="site-shell">
       <div className="page-shell">
         <header className="site-header">
-          <a className="brand" href="#top" aria-label="OceanRoute home">
+          <a className="brand" href="#top" aria-label="SeaSweep home">
             <span className="brand-mark" aria-hidden="true"></span>
-            <span>OceanRoute</span>
+            <span>{PRODUCT_NAME}</span>
           </a>
           <nav className="site-nav" aria-label="Primary">
             <a href="#platform">Platform</a>
@@ -734,32 +734,40 @@ export function App() {
             <a href="#impact">Impact</a>
           </nav>
           <a className="button button-ghost" href="#operations">
-            Explore the pilot
+            Open the judge demo
           </a>
         </header>
 
         <main id="top">
           <section className="hero section">
             <div className="hero-copy-block reveal">
-              <p className="eyebrow">Cleanup intelligence for public-interest fleets</p>
+              <p className="eyebrow">Predict, plan, prove cleanup missions</p>
               <h1>Help cleanup crews spend less time searching and more time collecting.</h1>
               <p className="lead">
-                OceanRoute turns public ocean data into debris hotspot forecasts, route plans, and transparent mission
-                reporting for NGOs, port partners, and local fleets. This launch experience is built to show the full
-                cleanup workflow and stay ready for the next model handoff.
+                {PRODUCT_NAME} turns public ocean data into debris hotspot forecasts, route plans, and transparent
+                mission reporting for NGOs, port partners, and local fleets. The landing site is polished enough for
+                judges, while the live stack still shows real ML and full-stack writes at work.
               </p>
               <div className="hero-actions">
                 <a className="button" href="#operations">
-                  View the launch demo
+                  View the judge demo
                 </a>
                 <button className="button button-secondary" onClick={handleRunForecast} type="button" disabled={loadingForecast}>
                   {forecastButtonLabel}
                 </button>
               </div>
+              <article className="runtime-banner" aria-label="Runtime status">
+                <div className="runtime-banner__header">
+                  <span className={`status-pill ${isDemoMode ? "status-warm" : "status-teal"}`}>{modeLabel}</span>
+                  <span className="runtime-banner__loop">Predict -&gt; Plan -&gt; Prove</span>
+                </div>
+                <p>{modeDetail}</p>
+                <code>{apiLabel}</code>
+              </article>
               <div className="hero-notes">
                 <span>24-72h hotspot forecast window</span>
-                <span>Route planning plus impact reporting</span>
-                <span>{isDemoMode ? "Hosted Pages demo" : "Live API connected"}</span>
+                <span>ML forecast plus route benchmarking</span>
+                <span>Impact ledger with mission writeback</span>
               </div>
             </div>
 
@@ -780,8 +788,8 @@ export function App() {
               <article className="route-card">
                 <div className="route-card__header">
                   <div>
-                    <p className="route-kicker">From hotspot to field log</p>
-                    <h2>Pilot mission preview</h2>
+                    <p className="route-kicker">From forecast to verified mission</p>
+                    <h2>Judge demo preview</h2>
                   </div>
                   <span className="status-pill status-teal">{isDemoMode ? "Hosted demo" : "Live stack"}</span>
                 </div>
@@ -824,10 +832,10 @@ export function App() {
 
           <section id="platform" className="section">
             <div className="section-heading reveal">
-              <p className="eyebrow">What OceanRoute delivers at launch</p>
+              <p className="eyebrow">What SeaSweep delivers at launch</p>
               <h2>A single product surface for forecasting, routing, and reporting cleanup work.</h2>
               <p>
-                The launch site is designed to communicate the mission clearly to partners while still showing a real
+                SeaSweep is designed to communicate the mission clearly to partners while still showing a real
                 operational workflow that can evolve with better models and richer data.
               </p>
             </div>
@@ -854,13 +862,25 @@ export function App() {
 
           <section id="operations" className="section section-tint">
             <div className="section-heading reveal">
-              <p className="eyebrow">Launch demo</p>
+              <p className="eyebrow">Judge demo</p>
               <h2>Forecast hotspots, preview a route, and show the trust signals behind every recommendation.</h2>
               <p>
-                This is the part partners can explore immediately. In the hosted Pages version it runs on seeded demo
-                artifacts, and in the live deployment it connects to the API for fresh runs and persisted feedback.
+                This is the core hackathon loop. In the hosted Pages version it runs on seeded demo artifacts, and in
+                the live deployment it connects to the API for fresh runs and persisted feedback.
               </p>
             </div>
+
+            <section className="demo-flow-card reveal" aria-label="Judge demo flow">
+              <span className="signal-label">Judge flow</span>
+              <div className="demo-flow-grid">
+                {DEMO_FLOW_STEPS.map((item) => (
+                  <article className="demo-flow-step" key={item.label}>
+                    <strong>{item.label}</strong>
+                    <p>{item.detail}</p>
+                  </article>
+                ))}
+              </div>
+            </section>
 
             <div className="operations-grid">
               <section className="workspace-card workspace-card-map">
@@ -1014,7 +1034,7 @@ export function App() {
                 <div className="workspace-header">
                   <div>
                     <h3>Mission planner</h3>
-                    <p>{isDemoMode ? "Load the seeded launch route or explore the live route optimizer." : "Optimize a single-vessel route or return a recon recommendation."}</p>
+                    <p>{isDemoMode ? "Load the seeded judge-demo route or explore the live route optimizer." : "Optimize a single-vessel route or return a recon recommendation."}</p>
                   </div>
                   <button
                     className="button button-secondary"
@@ -1138,7 +1158,7 @@ export function App() {
                     </div>
                   </>
                 ) : (
-                  <p className="empty-state">{isDemoMode ? "Load the seeded route to preview the launch mission." : "Optimize a route after loading a forecast."}</p>
+                  <p className="empty-state">{isDemoMode ? "Load the seeded route to preview the judge demo mission." : "Optimize a route after loading a forecast."}</p>
                 )}
               </section>
             </div>
@@ -1262,7 +1282,7 @@ export function App() {
                 <div className="workspace-header">
                   <div>
                     <h3>Launch hosting path</h3>
-                    <p>How the launch site is packaged today and how it grows into the live stack.</p>
+                    <p>How the landing site is packaged today and how it grows into the live stack.</p>
                   </div>
                 </div>
                 <ul className="priority-list">
@@ -1294,7 +1314,7 @@ export function App() {
                 </div>
                 {isDemoMode ? (
                   <p className="workspace-note">
-                    The GitHub Pages launch demo is read-only. Use the live API deployment to save feedback and write to
+                    The GitHub Pages SeaSweep demo is read-only. Use the live API deployment to save feedback and write to
                     the impact ledger.
                   </p>
                 ) : null}
@@ -1372,7 +1392,7 @@ export function App() {
                     />
                   </label>
                   <button className="button" type="submit" disabled={isDemoMode || !route || submittingFeedback}>
-                    {isDemoMode ? "Read-only in launch demo" : submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
+                    {isDemoMode ? "Read-only in hosted demo" : submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
                   </button>
                   {feedbackMessage ? <p className="message-banner message-banner-success">{feedbackMessage}</p> : null}
                 </form>
@@ -1431,7 +1451,7 @@ export function App() {
         </main>
 
         <footer className="site-footer">
-          <p>OceanRoute is built to launch as a shareable static demo now and grow into a live cleanup operations stack.</p>
+          <p>SeaSweep launches as a shareable GitHub Pages landing site and expands into a live cleanup operations stack.</p>
           <p>{isDemoMode ? "This hosted view is using seeded artifacts from the San Francisco Bay pilot scenario." : "This view is connected to the live API-backed pilot stack."}</p>
         </footer>
       </div>

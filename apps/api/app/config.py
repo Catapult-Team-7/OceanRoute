@@ -25,6 +25,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return values or default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str
@@ -42,13 +50,14 @@ class Settings:
     default_depot_lon: float
     vessel_speed_kmh: float
     write_debug_artifacts: bool
+    cors_allowed_origins: tuple[str, ...]
 
 
 def load_settings() -> Settings:
     project_root = Path(__file__).resolve().parents[3]
     _load_env_file(project_root / ".env")
     return Settings(
-        app_name=os.getenv("OCEANROUTE_APP_NAME", "OceanRoute API"),
+        app_name=os.getenv("OCEANROUTE_APP_NAME", "SeaSweep API"),
         api_prefix=os.getenv("OCEANROUTE_API_PREFIX", "/api"),
         pilot_region=os.getenv("OCEANROUTE_PILOT_REGION", "sf_bay_estuary"),
         database_url=os.getenv(
@@ -66,6 +75,7 @@ def load_settings() -> Settings:
         default_depot_lon=float(os.getenv("OCEANROUTE_DEFAULT_DEPOT_LON", "-122.4659")),
         vessel_speed_kmh=float(os.getenv("OCEANROUTE_VESSEL_SPEED_KMH", "18.0")),
         write_debug_artifacts=_env_bool("OCEANROUTE_WRITE_DEBUG_ARTIFACTS", True),
+        cors_allowed_origins=_env_csv("OCEANROUTE_CORS_ALLOWED_ORIGINS", ("*",)),
     )
 
 

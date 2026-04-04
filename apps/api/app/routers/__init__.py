@@ -1,2 +1,1 @@
-"""API routers for OceanRoute."""
-
+"""API routers for SeaSweep."""

@@ -63,7 +63,7 @@ def _benchmark(_: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="OceanRoute operational helpers.")
+    parser = argparse.ArgumentParser(description="SeaSweep operational helpers.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     forecast_parser = subparsers.add_parser("run-forecast", help="Run a forecast cycle.")
