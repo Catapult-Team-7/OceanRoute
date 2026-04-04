@@ -1,0 +1,17 @@
+{
+  "mission_id": "acd9ec0f-41f6-4efb-802c-608d65553b50",
+  "completed_at": "2026-04-04T22:18:48.378099Z",
+  "vessel_id": "sf-bay-pilot-vessel",
+  "recommended_mode": "collection",
+  "predicted_kg_min": 26.439,
+  "predicted_kg_max": 74.02,
+  "collected_kg": 68.098,
+  "vessel_distance_km": 42.869,
+  "vessel_hours": 3.9814999999999996,
+  "hotspot_hits": 8,
+  "hotspot_misses": 0,
+  "false_search_km": 0.6,
+  "fuel_liters": 47.78,
+  "route_deviation_reason": "Seeded scenario: confirmed drift along the northbound channel edge.",
+  "notes": "Deterministic SF Bay seeded walkthrough for demos and regression tests."
+}

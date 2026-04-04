@@ -15,4 +15,12 @@ __pycache__
 .vscode
 .env
 .env.local
+.tmp
+.tools
 apps/web/.turbo
+apps/web/dist
+apps/api/tests/test-data
+apps/api/tests/test_oceanroute.db
+*.db
+*.sqlite3
+alembic/__pycache__

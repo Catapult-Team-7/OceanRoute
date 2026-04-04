@@ -1,0 +1,14 @@
+{
+  "mission_id": "acd9ec0f-41f6-4efb-802c-608d65553b50",
+  "observed_at": "2026-04-04T18:18:48.358997Z",
+  "lat": 37.805,
+  "lon": -122.475,
+  "found_status": "found",
+  "debris_found": null,
+  "debris_class": "high",
+  "estimated_kg": 33.486,
+  "confidence": 0.86,
+  "photo_url": "https://example.com/sf-bay-demo-observation.jpg",
+  "note": "Seeded SF Bay post-outflow debris confirmation.",
+  "route_deviation_reason": "Shifted slightly north with the ebb tide before pickup."
+}

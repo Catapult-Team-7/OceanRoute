@@ -1,0 +1,65 @@
+{
+  "generated_at": "2026-04-04T18:18:51.428202Z",
+  "forecast_run_id": "94d319ff-4b89-421b-8541-fc6fcea03d7f",
+  "target_horizon_hour": 24,
+  "compared_strategies": [
+    {
+      "strategy": "nearest_hotspot",
+      "recommended_mode": "collection",
+      "ordered_cell_ids": [
+        "golden_gate:high",
+        "golden_gate:low",
+        "angel_island:high",
+        "angel_island:low",
+        "central_bay:high",
+        "central_bay:low",
+        "richmond_shoal:high"
+      ],
+      "expected_kg_min": 22.687,
+      "expected_kg_max": 63.295,
+      "expected_distance_km": 43.076,
+      "uncertainty_penalty": 2.63,
+      "hotspot_hit_rate_estimate": 0.5616,
+      "objective_score": 10.157
+    },
+    {
+      "strategy": "highest_yield",
+      "recommended_mode": "collection",
+      "ordered_cell_ids": [
+        "golden_gate:high",
+        "angel_island:high",
+        "central_bay:high",
+        "oakland_approach:high",
+        "berkeley_marina:high",
+        "golden_gate:low"
+      ],
+      "expected_kg_min": 21.659,
+      "expected_kg_max": 60.746,
+      "expected_distance_km": 48.526,
+      "uncertainty_penalty": 2.677,
+      "hotspot_hit_rate_estimate": 0.5539,
+      "objective_score": 6.989
+    },
+    {
+      "strategy": "recon_aware",
+      "recommended_mode": "collection",
+      "ordered_cell_ids": [
+        "golden_gate:low",
+        "golden_gate:high",
+        "angel_island:low",
+        "angel_island:high",
+        "berkeley_marina:high",
+        "oakland_approach:high",
+        "central_bay:high",
+        "central_bay:low"
+      ],
+      "expected_kg_min": 26.439,
+      "expected_kg_max": 74.02,
+      "expected_distance_km": 42.869,
+      "uncertainty_penalty": 2.646,
+      "hotspot_hit_rate_estimate": 0.559,
+      "objective_score": 16.161
+    }
+  ],
+  "winning_strategy": "recon_aware"
+}
