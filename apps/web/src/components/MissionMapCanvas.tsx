@@ -38,7 +38,7 @@ const MAP_STYLE = {
 } as const;
 
 function hotspotRadius(step: ForecastStep): number {
-  return 1800 + Math.max(step.expected_kg_max, 0.6) * 2800;
+  return 850 + Math.max(step.expected_kg_max, 0.4) * 850;
 }
 
 export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }: MissionMapCanvasProps) {
@@ -73,11 +73,11 @@ export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }:
           getPosition: (step) => [step.lon, step.lat],
           getRadius: (step) => hotspotRadius(step),
           radiusUnits: "meters",
-          radiusMinPixels: 7,
-          radiusMaxPixels: 28,
+          radiusMinPixels: 5,
+          radiusMaxPixels: 18,
           getFillColor: (step) => confidenceColor(step),
-          getLineColor: [241, 247, 255, 235],
-          lineWidthMinPixels: 1.4,
+          getLineColor: [255, 245, 232, 230],
+          lineWidthMinPixels: 1.2,
           stroked: true,
           pickable: true,
         }),
@@ -100,13 +100,28 @@ export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }:
     if (routePath.length > 1) {
       layers.push(
         new PathLayer({
+          id: "route-path-halo",
+          data: [{ path: routePath }],
+          getPath: (item: { path: [number, number][] }) => item.path,
+          getColor: route?.recommended_mode === "recon" ? [88, 54, 5, 210] : [9, 35, 68, 220],
+          getWidth: route?.recommended_mode === "recon" ? 760 : 820,
+          widthUnits: "meters",
+          widthMinPixels: route?.recommended_mode === "recon" ? 6 : 7,
+          rounded: true,
+          dashJustified: true,
+          getDashArray: route?.recommended_mode === "recon" ? [5, 4] : [0, 0],
+          extensions: pathExtensions,
+        }),
+      );
+      layers.push(
+        new PathLayer({
           id: "route-path",
           data: [{ path: routePath }],
           getPath: (item: { path: [number, number][] }) => item.path,
-          getColor: route?.recommended_mode === "recon" ? [245, 179, 63, 240] : [38, 145, 255, 245],
-          getWidth: route?.recommended_mode === "recon" ? 420 : 520,
+          getColor: route?.recommended_mode === "recon" ? [255, 186, 59, 248] : [48, 184, 255, 250],
+          getWidth: route?.recommended_mode === "recon" ? 480 : 580,
           widthUnits: "meters",
-          widthMinPixels: route?.recommended_mode === "recon" ? 3 : 4,
+          widthMinPixels: route?.recommended_mode === "recon" ? 4 : 5,
           rounded: true,
           dashJustified: true,
           getDashArray: route?.recommended_mode === "recon" ? [5, 4] : [0, 0],
@@ -118,12 +133,12 @@ export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }:
           id: "route-stops",
           data: routeSteps,
           getPosition: (step: ForecastStep) => [step.lon, step.lat],
-          getRadius: 2300,
+          getRadius: 1350,
           radiusUnits: "meters",
-          radiusMinPixels: 9,
-          getFillColor: route?.recommended_mode === "recon" ? [255, 228, 171, 230] : [213, 234, 255, 235],
-          getLineColor: route?.recommended_mode === "recon" ? [181, 123, 28, 245] : [20, 92, 169, 245],
-          lineWidthMinPixels: 2,
+          radiusMinPixels: 7,
+          getFillColor: route?.recommended_mode === "recon" ? [255, 227, 171, 214] : [225, 244, 255, 220],
+          getLineColor: route?.recommended_mode === "recon" ? [186, 123, 18, 250] : [33, 123, 197, 250],
+          lineWidthMinPixels: 2.2,
           stroked: true,
           pickable: true,
         }),
@@ -134,9 +149,9 @@ export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }:
         id: "depot",
         data: [{ lat: routeForm.depotLat, lon: routeForm.depotLon }],
         getPosition: (point: { lat: number; lon: number }) => [point.lon, point.lat],
-        getRadius: 2800,
+        getRadius: 1600,
         radiusUnits: "meters",
-        radiusMinPixels: 11,
+        radiusMinPixels: 8,
         getFillColor: [247, 250, 255, 255],
         getLineColor: [9, 48, 82, 255],
         lineWidthMinPixels: 2.6,
@@ -189,6 +204,38 @@ export function MissionMapCanvas({ forecast, route, selectedRegion, routeForm }:
             style={{ width: "100%", height: "100%" }}
           />
         </DeckGL>
+      </div>
+      <div className="map-legend">
+        <strong>Map legend</strong>
+        <div className="map-legend-row">
+          <span className="map-legend-swatch is-hotspot-high" />
+          <span>High confidence hotspot</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-swatch is-hotspot-medium" />
+          <span>Medium confidence hotspot</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-swatch is-hotspot-low" />
+          <span>Lower confidence hotspot</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-line is-collection" />
+          <span>Collection route</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-line is-recon" />
+          <span>Recon preview</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-swatch is-route-stop" />
+          <span>Planned collection stop</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="map-legend-swatch is-depot" />
+          <span>Depot / base</span>
+        </div>
+        <div className="map-legend-note">Hotspot color shows confidence. Debris class stays in the labels and ranking cards.</div>
       </div>
     </div>
   );

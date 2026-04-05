@@ -45,6 +45,19 @@ export function sourceLabel(provenance: ForecastProvenance): string {
   return provenance.is_fallback ? `${transition} fallback` : transition;
 }
 
+export function sourceSummary(provenance: ForecastProvenance): string {
+  if (provenance.source_mode_used === "hybrid") {
+    return "Live data is being used where available, with sample fill for missing forecast hours.";
+  }
+  if (provenance.source_mode_used === "live") {
+    return "Live forecast data is active for this run.";
+  }
+  if (provenance.is_fallback && provenance.source_mode_requested === "auto") {
+    return "Live data was unavailable for this run, so sample forecast data is being used.";
+  }
+  return "Sample forecast data is being used for this run.";
+}
+
 export function baselineLabel(provenance: ForecastProvenance): string {
   if (!provenance.baseline_engine) {
     return "Baseline pending";
@@ -79,6 +92,19 @@ export function modelLabel(provenance: ForecastProvenance): string {
     return `Deep model fallback -> baseline (${descriptor})`;
   }
   return `Model ${descriptor}${overrideLabel}`;
+}
+
+export function runtimeSummary(provenance: ForecastProvenance): string {
+  if (provenance.used_inference_fallback) {
+    if ((provenance.model_fallback_reason ?? "").includes("baseline artifacts for lookback hours")) {
+      return "The promoted model could not be applied to this run, so the baseline forecast is being shown.";
+    }
+    return "The model could not be applied to this run, so the baseline forecast is being shown.";
+  }
+  if (provenance.model_architecture) {
+    return "The active model was applied successfully for this run.";
+  }
+  return "This run is using the baseline forecast only.";
 }
 
 export function forecastExecutionLabel(provenance: ForecastProvenance): string {

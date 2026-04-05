@@ -113,13 +113,19 @@ export function MissionPage({
             <span className="input-note">{formatPercent(filters.minConfidence)}</span>
           </label>
         </div>
-        <div className="action-row">
-          <button className="primary-button" type="button" onClick={onRunForecast} disabled={loadingForecast || !selectedRegionId}>
-            {loadingForecast ? "Running forecast..." : `Run fresh forecast for ${selectedRegion?.name ?? "area"}`}
-          </button>
-          <button className="secondary-button" type="button" onClick={onOptimizeRoute} disabled={loadingRoute || !forecast}>
-            {loadingRoute ? "Optimizing..." : "Optimize route"}
-          </button>
+        <div className="action-strip">
+          <div className="action-strip-copy">
+            <span className="action-strip-label">Actions</span>
+            <strong>Run a fresh forecast or send the current ranking into route optimization.</strong>
+          </div>
+          <div className="action-row">
+            <button className="primary-button" type="button" onClick={onRunForecast} disabled={loadingForecast || !selectedRegionId}>
+              {loadingForecast ? "Running forecast..." : `Run fresh forecast for ${selectedRegion?.name ?? "area"}`}
+            </button>
+            <button className="secondary-button" type="button" onClick={onOptimizeRoute} disabled={loadingRoute || !forecast}>
+              {loadingRoute ? "Optimizing..." : "Optimize route"}
+            </button>
+          </div>
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { formatNumber, formatTimestamp } from "../lib/mission-utils";
 import type {
@@ -14,6 +14,8 @@ interface MlLabPageProps {
   datasets: DatasetArtifact[];
   models: ModelRegistryEntry[];
   evaluation: ModelEvaluateResponse | null;
+  evaluatingModelId: string | null;
+  evaluationHighlightKey: number;
   busy: boolean;
   onTrain: (values: MlTrainFormValues) => Promise<void>;
   onEvaluate: (modelId: string) => Promise<void>;
@@ -25,16 +27,39 @@ function formatMetric(metric: unknown): string {
     return formatNumber(metric, metric >= 100 ? 0 : 3);
   }
   if (Array.isArray(metric)) {
-    return metric.join(", ");
+    return JSON.stringify(metric, null, 2);
   }
   if (metric && typeof metric === "object") {
-    return JSON.stringify(metric);
+    return JSON.stringify(metric, null, 2);
   }
   return String(metric ?? "n/a");
 }
 
-export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, onTrain, onEvaluate, onPromote }: MlLabPageProps) {
+function isStructuredMetric(metric: unknown): boolean {
+  return Array.isArray(metric) || (!!metric && typeof metric === "object");
+}
+
+const HIDDEN_EVALUATION_METRICS = new Set([
+  "precision_at_10",
+  "recall_at_10",
+  "precision_at_10_defined",
+  "recall_at_10_defined",
+]);
+
+export function MlLabPage({
+  selectedRegion,
+  datasets,
+  models,
+  evaluation,
+  evaluatingModelId,
+  evaluationHighlightKey,
+  busy,
+  onTrain,
+  onEvaluate,
+  onPromote,
+}: MlLabPageProps) {
   const recommendedDatasetId = datasets[0]?.dataset_id ?? "";
+  const evaluationRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState<MlTrainFormValues>({
     datasetId: recommendedDatasetId,
     architecture: "convlstm",
@@ -50,6 +75,15 @@ export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, 
     }
   }, [form.datasetId, recommendedDatasetId]);
 
+  useEffect(() => {
+    if (!evaluationHighlightKey || !evaluationRef.current) {
+      return;
+    }
+    if (typeof evaluationRef.current.scrollIntoView === "function") {
+      evaluationRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [evaluationHighlightKey]);
+
   const featuredModels = useMemo(
     () =>
       [...models].sort((left, right) => {
@@ -61,13 +95,23 @@ export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, 
     [models],
   );
 
+  const visibleEvaluationMetrics = useMemo(
+    () =>
+      evaluation
+        ? Object.entries(evaluation.metrics)
+            .filter(([key]) => !HIDDEN_EVALUATION_METRICS.has(key))
+            .slice(0, 10)
+        : [],
+    [evaluation],
+  );
+
   return (
     <section className="three-column-page">
       <article className="panel-card">
         <div className="panel-header">
           <div>
             <p className="section-kicker">ML Lab</p>
-            <h2>Train and promote demo models</h2>
+            <h2>Train and manage models</h2>
             <p>Use SeaSweep dataset artifacts and existing `/api/ml/*` endpoints without importing Test’s old backend contracts.</p>
           </div>
           <span className="panel-badge">{featuredModels.length} models</span>
@@ -149,9 +193,7 @@ export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, 
           <button className="primary-button" type="submit" disabled={busy || !form.datasetId}>
             {busy ? "Submitting..." : `Start ${form.architecture} training`}
           </button>
-          <p className="info-note">
-            Region context: {selectedRegion?.name ?? "shared demo scope"} | Training requests stay on the SeaSweep backend APIs.
-          </p>
+          <p className="info-note">Region context: {selectedRegion?.name ?? "shared scope"} | Training runs are submitted through the OceanRoute API.</p>
         </form>
       </article>
 
@@ -196,7 +238,7 @@ export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, 
               <div className="model-actions">
                 <span className={`status-pill ${model.stage === "champion" ? "is-good" : ""}`}>{model.stage}</span>
                 <button className="secondary-button" type="button" onClick={() => void onEvaluate(model.model_id)} disabled={busy}>
-                  Evaluate
+                  {evaluatingModelId === model.model_id ? "Evaluating..." : "Evaluate"}
                 </button>
                 <button className="secondary-button" type="button" onClick={() => void onPromote(model.model_id)} disabled={busy}>
                   Promote
@@ -206,14 +248,14 @@ export function MlLabPage({ selectedRegion, datasets, models, evaluation, busy, 
           ))}
         </div>
         {evaluation ? (
-          <div className="evaluation-panel">
+          <div ref={evaluationRef} className={`evaluation-panel ${evaluationHighlightKey ? "is-highlight" : ""}`}>
             <h4>Latest evaluation</h4>
-            <p>{evaluation.model_id}</p>
+            <p className="evaluation-id">{evaluation.model_id}</p>
             <div className="stack-list compact-list">
-              {Object.entries(evaluation.metrics).slice(0, 10).map(([key, value]) => (
+              {visibleEvaluationMetrics.map(([key, value]) => (
                 <article key={key} className="metric-row">
-                  <span>{key}</span>
-                  <strong>{formatMetric(value)}</strong>
+                  <span className="metric-label">{key}</span>
+                  <span className={`metric-value ${isStructuredMetric(value) ? "is-multiline" : ""}`}>{formatMetric(value)}</span>
                 </article>
               ))}
             </div>

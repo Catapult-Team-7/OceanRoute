@@ -287,7 +287,7 @@ describe("App", () => {
     installFetchMock();
     render(<App />);
 
-    expect(await screen.findByText(/Mission-grade coastal cleanup ops/i)).not.toBeNull();
+    expect(await screen.findByText(/Cleanup Operations/i)).not.toBeNull();
     expect((await screen.findAllByText(/San Francisco Bay Estuary/i)).length).toBeGreaterThan(0);
     expect(await screen.findByText(/h1-h18 live, h19-h24 sample fill/i)).not.toBeNull();
     expect(screen.getByTestId("deck-map")).not.toBeNull();
@@ -315,10 +315,13 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /ML Lab/i }));
-    expect(await screen.findByText(/Train and promote demo models/i)).not.toBeNull();
+    expect(await screen.findByText(/Train and manage models/i)).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Evaluate/i }));
     await waitFor(() => {
-      expect(screen.getByText(/precision_at_10/i)).not.toBeNull();
+      expect(screen.getByText(/route_uplift_pct/i)).not.toBeNull();
     });
+    expect(screen.queryByText(/precision_at_10/i)).toBeNull();
+    expect(screen.queryByText(/recall_at_10/i)).toBeNull();
+    expect(screen.getByText(/Loaded evaluation metrics for model/i)).not.toBeNull();
   });
 });

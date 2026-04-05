@@ -33,6 +33,14 @@ const DEFAULT_FEEDBACK: FeedbackState = {
   routeDeviationReason: "",
 };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isTransientApiError(caught: unknown): boolean {
+  return caught instanceof Error && /status 5\d\d/i.test(caught.message);
+}
+
 export function App() {
   const view = useDemoStore((state) => state.view);
   const selectedRegionId = useDemoStore((state) => state.selectedRegionId);
@@ -54,6 +62,8 @@ export function App() {
   const [datasets, setDatasets] = useState<DatasetArtifact[]>([]);
   const [models, setModels] = useState<ModelRegistryEntry[]>([]);
   const [evaluation, setEvaluation] = useState<ModelEvaluateResponse | null>(null);
+  const [evaluatingModelId, setEvaluatingModelId] = useState<string | null>(null);
+  const [evaluationHighlightKey, setEvaluationHighlightKey] = useState(0);
   const [feedback, setFeedback] = useState<FeedbackState>(DEFAULT_FEEDBACK);
   const [loadingForecast, setLoadingForecast] = useState(true);
   const [loadingRoute, setLoadingRoute] = useState(false);
@@ -67,16 +77,32 @@ export function App() {
     [forecast?.region, regions, selectedRegionId],
   );
 
+  async function requestJsonWithRetry<T>(path: string, init?: RequestInit, attempts = 2): Promise<T> {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await requestJson<T>(path, init);
+      } catch (caught) {
+        lastError = caught;
+        if (attempt >= attempts || !isTransientApiError(caught)) {
+          break;
+        }
+        await sleep(300);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Request failed.");
+  }
+
   useEffect(() => {
     void (async () => {
       try {
         const [status, availableRegions, dashboard, missionRows, datasetRows, modelRows] = await Promise.all([
-          requestJson<HealthStatus>("/health"),
-          requestJson<RegionInfo[]>("/regions"),
-          requestJson<ImpactDashboard>("/impact/dashboard"),
-          requestJson<MissionRecord[]>("/missions"),
-          requestJson<DatasetArtifact[]>("/ml/datasets"),
-          requestJson<ModelRegistryEntry[]>("/ml/models"),
+          requestJsonWithRetry<HealthStatus>("/health"),
+          requestJsonWithRetry<RegionInfo[]>("/regions"),
+          requestJsonWithRetry<ImpactDashboard>("/impact/dashboard"),
+          requestJsonWithRetry<MissionRecord[]>("/missions"),
+          requestJsonWithRetry<DatasetArtifact[]>("/ml/datasets"),
+          requestJsonWithRetry<ModelRegistryEntry[]>("/ml/models"),
         ]);
         setHealth(status);
         setRegions(availableRegions);
@@ -119,7 +145,7 @@ export function App() {
       if (filters.debrisClass !== "all") {
         params.set("class", filters.debrisClass);
       }
-      const snapshot = await requestJson<ForecastSnapshot>(`/forecast/latest?${params.toString()}`);
+      const snapshot = await requestJsonWithRetry<ForecastSnapshot>(`/forecast/latest?${params.toString()}`);
       setForecast(snapshot);
       setForecastMissing(false);
     } catch (caught) {
@@ -136,8 +162,8 @@ export function App() {
 
   async function loadCatalog() {
     const [datasetRows, modelRows] = await Promise.all([
-      requestJson<DatasetArtifact[]>("/ml/datasets"),
-      requestJson<ModelRegistryEntry[]>("/ml/models"),
+      requestJsonWithRetry<DatasetArtifact[]>("/ml/datasets"),
+      requestJsonWithRetry<ModelRegistryEntry[]>("/ml/models"),
     ]);
     setDatasets(datasetRows);
     setModels(modelRows);
@@ -145,8 +171,8 @@ export function App() {
 
   async function loadMissionsAndImpact() {
     const [missionRows, dashboard] = await Promise.all([
-      requestJson<MissionRecord[]>("/missions"),
-      requestJson<ImpactDashboard>("/impact/dashboard"),
+      requestJsonWithRetry<MissionRecord[]>("/missions"),
+      requestJsonWithRetry<ImpactDashboard>("/impact/dashboard"),
     ]);
     setMissions(missionRows);
     setImpact(dashboard);
@@ -317,7 +343,14 @@ export function App() {
       setEvaluation(null);
       setActionMessage(`Training submitted: ${response.model.architecture} ${response.model.dataset_version ?? ""}`.trim());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Training request failed.");
+      const message = caught instanceof Error ? caught.message : "Training request failed.";
+      if (message.includes("Deep sequence training requires the separate ML environment")) {
+        setError(
+          `${message} Restart the local stack so the API runs from .venv-gpu, or launch the API from .venv-gpu manually.`,
+        );
+      } else {
+        setError(message);
+      }
     } finally {
       setBusyMl(false);
     }
@@ -326,12 +359,17 @@ export function App() {
   async function handleEvaluateModel(modelId: string) {
     setBusyMl(true);
     setError(null);
+    setActionMessage("");
+    setEvaluatingModelId(modelId);
     try {
       const result = await requestJson<ModelEvaluateResponse>(`/ml/models/${modelId}/evaluate`);
       setEvaluation(result);
+      setEvaluationHighlightKey(Date.now());
+      setActionMessage(`Loaded evaluation metrics for model ${modelId.slice(0, 8)}.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to evaluate model.");
     } finally {
+      setEvaluatingModelId(null);
       setBusyMl(false);
     }
   }
@@ -397,6 +435,8 @@ export function App() {
           datasets={datasets}
           models={models}
           evaluation={evaluation}
+          evaluatingModelId={evaluatingModelId}
+          evaluationHighlightKey={evaluationHighlightKey}
           busy={busyMl}
           onTrain={handleTrainModel}
           onEvaluate={handleEvaluateModel}
