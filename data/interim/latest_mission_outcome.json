@@ -1,0 +1,17 @@
+{
+  "mission_id": "41058e3a-3879-4e03-8840-26cbf3f1fe78",
+  "completed_at": "2026-04-05T05:56:10.227000Z",
+  "vessel_id": "sf-bay-pilot-vessel",
+  "recommended_mode": "recon",
+  "predicted_kg_min": 0.0,
+  "predicted_kg_max": 0.0,
+  "collected_kg": 8.0,
+  "vessel_distance_km": 0.0,
+  "vessel_hours": 0.5,
+  "hotspot_hits": 1,
+  "hotspot_misses": 0,
+  "false_search_km": 0.0,
+  "fuel_liters": 0.0,
+  "route_deviation_reason": null,
+  "notes": null
+}

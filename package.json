@@ -1,0 +1,23 @@
+{
+  "name": "oceanroute",
+  "private": true,
+  "engines": {
+    "node": "20.19.x"
+  },
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "check:node": "node scripts/check-node-version.mjs",
+    "dev:web": "npm run check:node && npm run dev --workspace apps/web",
+    "build:web": "npm run check:node && npm run build --workspace apps/web",
+    "dev:api": "uvicorn app.main:app --app-dir apps/api --reload",
+    "test:api": ".\\.venv\\Scripts\\python.exe -m pytest -q apps/api/tests",
+    "test:web": "npm run check:node && npm run test --workspace apps/web"
+  },
+  "devDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.60.1",
+    "ansi-regex": "^5.0.1",
+    "cssstyle": "^4.1.0"
+  }
+}

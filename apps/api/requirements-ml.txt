@@ -1,0 +1,7 @@
+pytorch-lightning>=2.4
+tensorboard>=2.16
+rich>=13.9
+matplotlib>=3.9
+pyarrow>=16.1
+zarr>=2.18
+fsspec>=2024.6

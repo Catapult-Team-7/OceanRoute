@@ -1,0 +1,105 @@
+{
+  "mission_id": "38ebfbab-9825-4636-aafb-0a023774e4f1",
+  "created_at": "2026-04-04T18:39:10.576496Z",
+  "vessel_id": "sf-bay-pilot-vessel",
+  "recommended_mode": "collection",
+  "target_horizon_hour": 24,
+  "ordered_cell_ids": [
+    "central_bay:high",
+    "central_bay:low",
+    "berkeley_marina:low",
+    "berkeley_marina:high",
+    "angel_island:low",
+    "angel_island:high",
+    "golden_gate:low",
+    "golden_gate:high"
+  ],
+  "expected_kg_min": 22.461,
+  "expected_kg_max": 64.503,
+  "expected_distance_km": 34.659,
+  "expected_duration_min": 211.53,
+  "estimated_fuel_liters": 42.31,
+  "objective_score": 13.277,
+  "legs": [
+    {
+      "from_cell": "depot",
+      "to_cell": "central_bay:high",
+      "distance_km": 7.995,
+      "travel_minutes": 26.65
+    },
+    {
+      "from_cell": "central_bay:high",
+      "to_cell": "central_bay:low",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "central_bay:low",
+      "to_cell": "berkeley_marina:low",
+      "distance_km": 8.272,
+      "travel_minutes": 27.57
+    },
+    {
+      "from_cell": "berkeley_marina:low",
+      "to_cell": "berkeley_marina:high",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "berkeley_marina:high",
+      "to_cell": "angel_island:low",
+      "distance_km": 10.293,
+      "travel_minutes": 34.31
+    },
+    {
+      "from_cell": "angel_island:low",
+      "to_cell": "angel_island:high",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "angel_island:high",
+      "to_cell": "golden_gate:low",
+      "distance_km": 7.282,
+      "travel_minutes": 24.27
+    },
+    {
+      "from_cell": "golden_gate:low",
+      "to_cell": "golden_gate:high",
+      "distance_km": 0.0,
+      "travel_minutes": 0.0
+    },
+    {
+      "from_cell": "golden_gate:high",
+      "to_cell": "depot",
+      "distance_km": 0.819,
+      "travel_minutes": 2.73
+    }
+  ],
+  "uncertainty_risk": 0.4628,
+  "alternates": [
+    "san_leandro:high",
+    "alameda_corridor:high",
+    "oakland_approach:high"
+  ],
+  "forecast_run_id": "84a3d123-3e00-497a-babc-df31a97aa8ea",
+  "forecast_provenance": {
+    "generated_at": "2026-04-04T18:00:00Z",
+    "horizon_hours": 48,
+    "source_mode_requested": "auto",
+    "source_mode_used": "sample",
+    "is_fallback": true,
+    "is_stale": false,
+    "age_minutes": 39,
+    "stale_after_minutes": 180,
+    "source_notes": [
+      "Using deterministic SF Bay NOAA-style fixture data.",
+      "Live ingest failed and fell back to sample data: Missing live current predictions for horizon 1h."
+    ]
+  },
+  "forecast_is_stale": false,
+  "metadata": {
+    "solver": "ortools",
+    "candidate_count": 18
+  }
+}

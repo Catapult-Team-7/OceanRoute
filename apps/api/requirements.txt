@@ -1,0 +1,11 @@
+alembic==1.16.5
+apscheduler==3.11.0
+fastapi==0.116.1
+httpx==0.28.1
+ortools==9.14.6206
+pydantic==2.11.7
+psycopg[binary]==3.2.9
+pytest==8.4.1
+python-multipart==0.0.20
+sqlalchemy==2.0.49
+uvicorn[standard]==0.35.0

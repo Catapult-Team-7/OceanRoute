@@ -1,0 +1,8 @@
+{
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=wind&application=OceanRoute&date=latest&station=9415020&time_zone=gmt&units=metric&format=json",
+  "payload": {
+    "error": {
+      "message": "No data was found. This product may not be offered at this station at the requested time."
+    }
+  }
+}
