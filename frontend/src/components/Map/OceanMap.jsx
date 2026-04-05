@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo, useState } from "react";
 
-import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 
 import { useHeatmapData } from "../../hooks/useHeatmapData";
@@ -95,6 +95,202 @@ function pointDistanceToSeed(point, seed) {
   );
 }
 
+function nearestSupportCoordinate(supportFeatures, lon, lat, maxDistanceDeg = 8) {
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const feature of supportFeatures) {
+    const [candidateLon, candidateLat] = feature.geometry.coordinates;
+    const candidate = { lon: candidateLon, lat: candidateLat };
+    const distance = distanceDeg(candidate, { lon, lat });
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return bestDistance <= maxDistanceDeg ? best : null;
+}
+
+function splitRouteAcrossDateline(path) {
+  if (!Array.isArray(path) || path.length < 2) {
+    return [];
+  }
+  const segments = [];
+  let current = [path[0]];
+  for (let index = 1; index < path.length; index += 1) {
+    const previous = path[index - 1];
+    const next = path[index];
+    const lonDelta = Math.abs(previous[0] - next[0]);
+    if (lonDelta > 180) {
+      if (current.length > 1) {
+        segments.push(current);
+      }
+      current = [next];
+      continue;
+    }
+    current.push(next);
+  }
+  if (current.length > 1) {
+    segments.push(current);
+  }
+  return segments;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function severityBand(score) {
+  if (score >= 3.2) return "critical";
+  if (score >= 2.2) return "high";
+  if (score >= 1.4) return "elevated";
+  return "watch";
+}
+
+function severityWeight(score) {
+  return clamp(score / 3.6, 0.18, 1);
+}
+
+function formatArea(areaKm2) {
+  if (areaKm2 >= 1_000_000) return `${(areaKm2 / 1_000_000).toFixed(2)}M km²`;
+  if (areaKm2 >= 10_000) return `${Math.round(areaKm2 / 1000)}k km²`;
+  return `${Math.round(areaKm2)} km²`;
+}
+
+function vectorOrientationDegrees(eastward = 0, northward = 0) {
+  if (!eastward && !northward) {
+    return 0;
+  }
+  return (Math.atan2(northward, eastward) * 180) / Math.PI;
+}
+
+function constrainLonToCenter(lon, centerLon) {
+  let adjusted = lon;
+  while (adjusted - centerLon > 180) adjusted -= 360;
+  while (adjusted - centerLon < -180) adjusted += 360;
+  if (centerLon >= 160 && adjusted < 0) {
+    adjusted = 180;
+  } else if (centerLon <= -160 && adjusted > 0) {
+    adjusted = -180;
+  }
+  return clamp(adjusted, -180, 180);
+}
+
+function blobPolygon(
+  lon,
+  lat,
+  radiusKm,
+  {
+    orientationDeg = 0,
+    elongation = 0.28,
+    roughness = 0.16,
+    seed = 0,
+    steps = 56,
+  } = {}
+) {
+  const safeLat = clamp(lat, -84, 84);
+  const latScale = 110.574;
+  const lonScale = Math.max(111.32 * Math.cos((safeLat * Math.PI) / 180), 18);
+  const coordinates = [];
+  const orientation = (orientationDeg * Math.PI) / 180;
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = (index / steps) * Math.PI * 2;
+    const directionalStretch = 1 + elongation * Math.cos(angle - orientation);
+    const wobble =
+      1 +
+      roughness * 0.45 * Math.sin(angle * 2 + seed) +
+      roughness * 0.28 * Math.cos(angle * 3 - seed * 0.7) +
+      roughness * 0.16 * Math.sin(angle * 5 + seed * 1.7);
+    const localRadius = Math.max(radiusKm * 0.45, radiusKm * directionalStretch * wobble);
+    const ringLat = clamp(safeLat + (Math.sin(angle) * localRadius) / latScale, -84, 84);
+    const ringLon = constrainLonToCenter(lon + (Math.cos(angle) * localRadius) / lonScale, lon);
+    coordinates.push([ringLon, ringLat]);
+  }
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Polygon",
+      coordinates: [coordinates],
+    },
+  };
+}
+
+function oceanBlobPolygon(lon, lat, radiusKm, supportFeatures, options = {}) {
+  const sectorCount = options.sectorCount || 24;
+  const safeLat = clamp(lat, -84, 84);
+  const latScale = 110.574;
+  const lonScale = Math.max(111.32 * Math.cos((safeLat * Math.PI) / 180), 18);
+  const maxLatDelta = (radiusKm * 1.15) / latScale;
+  const maxLonDelta = (radiusKm * 1.15) / lonScale;
+  const bins = Array.from({ length: sectorCount }, () => []);
+  const fallback = blobPolygon(lon, lat, radiusKm, options);
+
+  for (const feature of supportFeatures) {
+    const [candidateLon, candidateLat] = feature.geometry.coordinates;
+    const lonDelta = normalizeLon(candidateLon - lon);
+    const latDelta = candidateLat - lat;
+    if (Math.abs(latDelta) > maxLatDelta || Math.abs(lonDelta) > maxLonDelta) {
+      continue;
+    }
+    const dxKm = lonDelta * lonScale;
+    const dyKm = latDelta * latScale;
+    const distanceKm = Math.hypot(dxKm, dyKm);
+    if (distanceKm > radiusKm * 1.2 || distanceKm < radiusKm * 0.14) {
+      continue;
+    }
+    const angle = (Math.atan2(dyKm, dxKm) + Math.PI * 2) % (Math.PI * 2);
+    const binIndex = Math.min(sectorCount - 1, Math.floor((angle / (Math.PI * 2)) * sectorCount));
+    bins[binIndex].push({ angle, distanceKm });
+  }
+
+  const supportedBins = bins.filter((bin) => bin.length);
+  if (supportedBins.length < Math.floor(sectorCount * 0.45)) {
+    return fallback;
+  }
+
+  const smoothedDistances = bins.map((bin, index) => {
+    const own = bin.length ? Math.max(...bin.map((item) => item.distanceKm)) : null;
+    const previous = bins[(index - 1 + sectorCount) % sectorCount];
+    const next = bins[(index + 1) % sectorCount];
+    const prevDistance = previous.length ? Math.max(...previous.map((item) => item.distanceKm)) : null;
+    const nextDistance = next.length ? Math.max(...next.map((item) => item.distanceKm)) : null;
+    const samples = [prevDistance, own, nextDistance].filter((value) => value != null);
+    if (!samples.length) {
+      return radiusKm * 0.58;
+    }
+    return samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  });
+
+  const coordinates = [];
+  for (let index = 0; index <= sectorCount; index += 1) {
+    const angle = ((index % sectorCount) / sectorCount) * Math.PI * 2;
+    const localRadius = clamp(smoothedDistances[index % sectorCount], radiusKm * 0.46, radiusKm * 0.96);
+    const ringLat = clamp(safeLat + (Math.sin(angle) * localRadius) / latScale, -84, 84);
+    const ringLon = constrainLonToCenter(lon + (Math.cos(angle) * localRadius) / lonScale, lon);
+    coordinates.push([ringLon, ringLat]);
+  }
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Polygon",
+      coordinates: [coordinates],
+    },
+  };
+}
+
+function zoneColor(kind, score) {
+  const level = severityBand(score);
+  if (kind === "trash_zone") {
+    if (level === "critical") return [255, 108, 39];
+    if (level === "high") return [255, 152, 61];
+    if (level === "elevated") return [255, 198, 79];
+    return [255, 227, 133];
+  }
+  if (level === "critical") return [255, 82, 123];
+  if (level === "high") return [255, 112, 156];
+  if (level === "elevated") return [255, 150, 186];
+  return [255, 192, 216];
+}
+
 export default function OceanMap() {
   useHeatmapData();
   useTrashData();
@@ -134,6 +330,20 @@ export default function OceanMap() {
         .sort((a, b) => routeStrength(b) - routeStrength(a))
         .slice(0, selectedRegion === "global" ? 30 : 36),
     [selectedRegion, trashTargets]
+  );
+  const anchoredTrashTargets = useMemo(
+    () =>
+      visibleTrashTargets.map((target) => {
+        const anchored = nearestSupportCoordinate(points, target.lon, target.lat, selectedRegion === "global" ? 8 : 5);
+        return anchored
+          ? {
+              ...target,
+              lon: anchored.lon,
+              lat: anchored.lat,
+            }
+          : target;
+      }),
+    [points, selectedRegion, visibleTrashTargets]
   );
   const rawRouteTargets = useMemo(
     () =>
@@ -177,20 +387,29 @@ export default function OceanMap() {
           }
           seenTransportOrigins.add(transportKey);
         }
-        selected.push(item);
+        const anchored = nearestSupportCoordinate(points, item.lon, item.lat, selectedRegion === "global" ? 8 : 5);
+        selected.push(
+          anchored
+            ? {
+                ...item,
+                lon: anchored.lon,
+                lat: anchored.lat,
+              }
+            : item
+        );
         if (selected.length >= (selectedRegion === "global" ? 18 : 20)) {
           break;
         }
       }
       return selected;
     },
-    [rawRouteTargets, selectedRegion]
+    [points, rawRouteTargets, selectedRegion]
   );
 
   const routeSegments = useMemo(
     () =>
       routedTrashTargets
-        .map((item) => {
+        .flatMap((item) => {
           const transportPath =
             Array.isArray(item.metadata?.transport_path) && item.metadata.transport_path.length > 1
               ? item.metadata.transport_path
@@ -202,24 +421,25 @@ export default function OceanMap() {
                 [routeTarget.lon, routeTarget.lat],
               ]
             : transportPath || [[item.lon, item.lat]];
-          return {
-            id: `${item.id}-route`,
-            path,
+          const targetPosition = transportPath
+            ? transportPath[transportPath.length - 1]
+            : routeTarget
+              ? [routeTarget.lon, routeTarget.lat]
+              : [item.lon, item.lat];
+          return splitRouteAcrossDateline(path).map((segmentPath, segmentIndex) => ({
+            id: `${item.id}-route-${segmentIndex}`,
+            path: segmentPath,
             source: [item.lon, item.lat],
-            target: transportPath
-              ? transportPath[transportPath.length - 1]
-              : routeTarget
-                ? [routeTarget.lon, routeTarget.lat]
-                : [item.lon, item.lat],
+            target: targetPosition,
             density: item.routePriority || item.intensity || 0,
             label: routeTarget
               ? `${item.label} to ${routeTarget.name}`
               : `${item.label} current transport`,
             weakening: item.weakening || item.metadata?.weakening_score || 0,
             routeMode: routeTarget ? "port" : "transport",
-          };
+          }));
         })
-      .filter((item) => item.path.length > 1),
+        .filter((item) => item.path.length > 1),
     [routedTrashTargets]
   );
 
@@ -283,7 +503,7 @@ export default function OceanMap() {
         lon: point.geometry.coordinates[0],
       })),
       ...visibleAnomalies.map((anomaly) => ({ lat: anomaly.lat, lon: anomaly.lon })),
-      ...visibleTrashTargets.map((target) => ({ lat: target.lat, lon: target.lon })),
+      ...anchoredTrashTargets.map((target) => ({ lat: target.lat, lon: target.lon })),
     ];
 
     const strongThreshold = selectedRegion === "global" ? 1.65 : 1.05;
@@ -304,10 +524,149 @@ export default function OceanMap() {
       })
       .sort((a, b) => mapSignalScore(b) - mapSignalScore(a))
       .slice(0, selectedRegion === "global" ? 900 : 1200);
-  }, [hotspotNodes, points, selectedRegion, visibleAnomalies, visibleTrashTargets, weakeningZones]);
+  }, [anchoredTrashTargets, hotspotNodes, points, selectedRegion, visibleAnomalies, weakeningZones]);
+
+  const co2Zones = useMemo(
+    () =>
+      hotspotNodes.map((point, index) => {
+        const properties = point.properties || {};
+        const lon = point.geometry.coordinates[0];
+        const lat = point.geometry.coordinates[1];
+        const score = co2HotspotScore(point);
+        const radiusKm =
+          (selectedRegion === "global" ? 180 : 120) +
+          (properties.display_signal || 0) * 150 +
+          (properties.weakening_score || 0) * 240 +
+          (properties.anomaly_score || 0) * 120;
+        const areaKm2 = Math.PI * radiusKm * radiusKm;
+        const color = zoneColor("co2_zone", score);
+        const orientationDeg = vectorOrientationDegrees(properties.current_u || 0, properties.current_v || 0);
+        const seed = ((lon + 180) * 0.013) + ((lat + 90) * 0.021);
+        return {
+          ...oceanBlobPolygon(lon, lat, radiusKm, points, {
+            orientationDeg,
+            elongation: 0.16 + Math.min(0.14, Math.abs(properties.current_u || 0) + Math.abs(properties.current_v || 0)),
+            roughness: 0.05 + Math.min(0.05, (properties.display_signal || 0) * 0.04),
+            seed,
+            sectorCount: 28,
+          }),
+          id: `co2-zone-${index}`,
+          properties: {
+            kind: "co2_zone",
+            label: `${properties.predicted_flux < 0 ? "Carbon sink stress" : "CO2 outgassing"} zone`,
+            lat,
+            lon,
+            severity: severityBand(score),
+            severity_score: score,
+            area_km2: areaKm2,
+            radius_km: radiusKm,
+            predicted_flux: properties.predicted_flux || 0,
+            observed_flux: properties.observed_flux || properties.predicted_flux || 0,
+            display_signal: properties.display_signal || 0,
+            weakening_score: properties.weakening_score || 0,
+            anomaly_score: properties.anomaly_score || 0,
+            route_priority: properties.route_priority || 0,
+            fill_color: color,
+          },
+        };
+      }),
+    [hotspotNodes, points, selectedRegion]
+  );
+
+  const trashZones = useMemo(
+    () =>
+      anchoredTrashTargets.map((target, index) => {
+        const score = routeStrength(target);
+        const radiusKm =
+          (selectedRegion === "global" ? 140 : 100) +
+          (target.clusterSize || 1) * 18 +
+          (target.intensity || 0) * 70 +
+          (target.routePriority || 0) * 34;
+        const areaKm2 = Math.PI * radiusKm * radiusKm;
+        const color = zoneColor("trash_zone", score);
+        const routeName = target.routeTarget?.name || target.nearest_port?.name || "Current transport corridor";
+        const transportPath = target.metadata?.transport_path || [];
+        const lastPoint = transportPath[transportPath.length - 1] || [target.lon, target.lat];
+        const firstPoint = transportPath[0] || [target.lon, target.lat];
+        const orientationDeg = vectorOrientationDegrees(lastPoint[0] - firstPoint[0], lastPoint[1] - firstPoint[1]);
+        const seed = ((target.lon + 180) * 0.017) + ((target.lat + 90) * 0.029);
+        return {
+          ...oceanBlobPolygon(target.lon, target.lat, radiusKm, points, {
+            orientationDeg,
+            elongation: 0.18 + Math.min(0.14, (target.routePriority || 0) * 0.06),
+            roughness: 0.06 + Math.min(0.05, (target.intensity || 0) * 0.03),
+            seed,
+            sectorCount: 28,
+          }),
+          id: `trash-zone-${index}`,
+          properties: {
+            kind: "trash_zone",
+            label: target.clusterSize > 1 ? `Trash accumulation cluster x${target.clusterSize}` : "Trash accumulation zone",
+            lat: target.lat,
+            lon: target.lon,
+            severity: severityBand(score),
+            severity_score: score,
+            area_km2: areaKm2,
+            radius_km: radiusKm,
+            intensity: target.intensity || 0,
+            route_priority: target.routePriority || 0,
+            weakening_score: target.weakening || target.metadata?.weakening_score || 0,
+            anomaly_score: target.anomalyScore || target.metadata?.anomaly_score || 0,
+            cluster_size: target.clusterSize || 1,
+            route_name: routeName,
+            route_mode: target.routeTarget || target.nearest_port ? "port" : "transport",
+            fill_color: color,
+          },
+        };
+      }),
+    [anchoredTrashTargets, points, selectedRegion]
+  );
+
+  const hoverTargets = useMemo(
+    () => [
+      ...co2Zones.map((feature) => ({
+        ...feature.properties,
+        position: [feature.properties.lon, feature.properties.lat],
+        hoverRadius: Math.max(70000, (feature.properties.radius_km || 120) * 1050),
+      })),
+      ...trashZones.map((feature) => ({
+        ...feature.properties,
+        position: [feature.properties.lon, feature.properties.lat],
+        hoverRadius: Math.max(70000, (feature.properties.radius_km || 120) * 1050),
+      })),
+    ],
+    [co2Zones, trashZones]
+  );
+
+  const zoneLabels = useMemo(() => {
+    const co2Labels = co2Zones.slice(0, selectedRegion === "global" ? 12 : 16).map((feature) => ({
+      id: `${feature.id}-label`,
+      position: [feature.properties.lon, feature.properties.lat],
+      text: `CO2 ${feature.properties.severity}`,
+      color: [255, 232, 244, 230],
+    }));
+    const trashLabels = trashZones.slice(0, selectedRegion === "global" ? 14 : 18).map((feature) => ({
+      id: `${feature.id}-label`,
+      position: [feature.properties.lon, feature.properties.lat],
+      text: `Trash ${feature.properties.severity}`,
+      color: [255, 247, 216, 230],
+    }));
+    return [...co2Labels, ...trashLabels];
+  }, [co2Zones, selectedRegion, trashZones]);
 
   const tooltipText = ({ object }) => {
     if (!object) return null;
+    const zone = object.properties || object;
+    if (zone.kind === "trash_zone") {
+      return {
+        text: `${zone.label}\nSeverity: ${zone.severity}\nEstimated spread: ${formatArea(zone.area_km2)}\nTransport intensity: ${zone.intensity.toFixed(2)}\nRoute: ${zone.route_name}\nWhy surfaced: route priority ${zone.route_priority.toFixed(2)}, weakening ${zone.weakening_score.toFixed(2)}, anomaly ${zone.anomaly_score.toFixed(2)}`,
+      };
+    }
+    if (zone.kind === "co2_zone") {
+      return {
+        text: `${zone.label}\nSeverity: ${zone.severity}\nArea of effect: ${formatArea(zone.area_km2)}\nPredicted flux: ${zone.predicted_flux.toFixed(2)}\nObserved reference: ${zone.observed_flux.toFixed(2)}\nWhy surfaced: signal ${zone.display_signal.toFixed(2)}, weakening ${zone.weakening_score.toFixed(2)}, anomaly ${zone.anomaly_score.toFixed(2)}`,
+      };
+    }
     if (object.routeTarget?.name) {
       return {
         text: `${object.label}\nObserved trash intensity: ${(
@@ -350,29 +709,30 @@ export default function OceanMap() {
         rounded: true,
         pickable: true,
       }),
-      new ScatterplotLayer({
-        id: "sink-nodes",
-        data: hotspotNodes,
-        getPosition: (d) => d.geometry.coordinates,
-        getRadius: (d) => 24000 + Math.abs(d.properties.predicted_flux) * 12000 + (d.properties.weakening_score || 0) * 42000,
-        radiusMinPixels: selectedRegion === "global" ? 6 : 8,
-        getFillColor: (d) =>
-          d.properties.predicted_flux < 0 ? [64, 219, 168, 130] : [255, 135, 102, 130],
-        getLineColor: [214, 244, 255, 190],
-        lineWidthMinPixels: 1.6,
-        stroked: true,
+      new GeoJsonLayer({
+        id: "co2-zones-hitbox",
+        data: co2Zones,
+        filled: true,
+        stroked: false,
+        getFillColor: [0, 0, 0, 0],
+        pickable: true,
+      }),
+      new GeoJsonLayer({
+        id: "trash-zones-hitbox",
+        data: trashZones,
+        filled: true,
+        stroked: false,
+        getFillColor: [0, 0, 0, 0],
         pickable: true,
       }),
       new ScatterplotLayer({
-        id: "weakening-zones",
-        data: weakeningZones,
-        getPosition: (d) => d.geometry.coordinates,
-        getRadius: (d) => 22000 + d.properties.weakening_score * 52000,
-        radiusMinPixels: selectedRegion === "global" ? 8 : 10,
-        getFillColor: [255, 114, 94, 54],
-        getLineColor: [255, 184, 116, 170],
-        lineWidthMinPixels: 1.2,
-        stroked: true,
+        id: "zone-hover-targets",
+        data: hoverTargets,
+        getPosition: (d) => d.position,
+        getRadius: (d) => d.hoverRadius,
+        getFillColor: [0, 0, 0, 0],
+        radiusMinPixels: 14,
+        stroked: false,
         pickable: true,
       }),
       new ScatterplotLayer({
@@ -387,30 +747,15 @@ export default function OceanMap() {
         stroked: true,
         pickable: true,
       }));
-      if (visibleTrashTargets.length) {
+      if (anchoredTrashTargets.length) {
         activeLayers.push(
-      new ScatterplotLayer({
-        id: "trash-targets",
-        data: visibleTrashTargets,
-        getPosition: (d) => [d.lon, d.lat],
-        getRadius: (d) => 60000 + (d.clusterSize || 1) * 15000 + (d.routePriority || d.intensity || 0) * 40000,
-        radiusMinPixels: selectedRegion === "global" ? 12 : 14,
-        getFillColor: (d) =>
-          d.observed
-            ? [255, 174, 66, 90 + Math.round(Math.min(d.intensity || 0, 1.4) * 80)]
-            : [255, 196, 61, 80 + Math.round(Math.min(d.routePriority || 0, 1.4) * 72)],
-        getLineColor: (d) => (d.observed ? [255, 232, 188, 200] : [255, 230, 160, 180]),
-        lineWidthMinPixels: 4,
-        stroked: true,
-        pickable: true,
-      }),
       new TextLayer({
-        id: "recovery-target-labels",
-        data: routeLabels,
+        id: "zone-labels",
+        data: zoneLabels,
         getPosition: (d) => d.position,
-        getText: (d) => d.label,
-        getColor: [246, 249, 252, 210],
-        getSize: 12,
+        getText: (d) => d.text,
+        getColor: (d) => d.color,
+        getSize: 12.5,
         sizeUnits: "pixels",
         getPixelOffset: [0, -16],
         getTextAnchor: "middle",
@@ -434,7 +779,7 @@ export default function OceanMap() {
       }
       return activeLayers;
     },
-    [hotspotNodes, routeLabels, routeSegments, selectedRegion, verifiedMap, viewState.zoom, visibleAnomalies, visibleTrashTargets, weakeningZones]
+    [anchoredTrashTargets.length, co2Zones, hoverTargets, routeSegments, selectedRegion, trashZones, verifiedMap, visibleAnomalies, zoneLabels]
   );
 
   return (
@@ -443,15 +788,15 @@ export default function OceanMap() {
         <div className="map-brief">
           <div>
             <span className="map-brief-label">Mission Map</span>
-            <strong>CO2 weakening, recovery targets, and port corridors on a satellite basemap</strong>
+            <strong>CO2 stress zones, trash accumulation areas, and recovery corridors on a satellite basemap</strong>
             {verifiedMap && prioritySummary.degradationTarget ? (
               <small className="map-brief-subcopy">
-                Top weakening cell: {prioritySummary.degradationTarget.properties.weakening_score.toFixed(2)} · Top route
-                target: {visibleTrashTargets[0]?.routeTarget?.name || "awaiting routing target"}
+                Hover any zone to inspect severity, area of effect, and routing context. Top route target:{" "}
+                {anchoredTrashTargets[0]?.routeTarget?.name || "current-transport route"}
               </small>
             ) : (
               <small className="map-brief-subcopy">
-                Provisional map overlays stay visible while the verified grid catches up. Checkpoint-backed products refresh automatically as training and ingestion progress.
+                Provisional mission zones stay visible while the verified grid catches up. Severity, footprint, and transport routes update as checkpoint-backed products refresh.
               </small>
             )}
           </div>
@@ -485,19 +830,42 @@ export default function OceanMap() {
           <MapLibreSurface
             basemapStyle={basemapStyle}
             heatmapFeatures={fieldHighlights}
-            co2Hotspots={hotspotNodes}
-            trashTargets={visibleTrashTargets}
+            co2Zones={co2Zones}
+            trashZones={trashZones}
+            co2Hotspots={[]}
+            trashTargets={[]}
             routeSegments={routeSegments}
-            anomalies={visibleAnomalies}
+            anomalies={[]}
             resolution={gridResolution}
           />
         </Suspense>
       </DeckGL>
+      <div className="map-legend">
+        <div className="map-legend-header">
+          <strong>Mission Layers</strong>
+          <span>Hover zones for severity, footprint, and routing</span>
+        </div>
+        <div className="map-legend-row">
+          <span className="legend-swatch legend-swatch-co2" />
+          <span>CO2 hotspot zone</span>
+          <small>magenta fill · severity grows with opacity and outline</small>
+        </div>
+        <div className="map-legend-row">
+          <span className="legend-swatch legend-swatch-trash" />
+          <span>Trash accumulation zone</span>
+          <small>gold fill · size reflects spread and transport intensity</small>
+        </div>
+        <div className="map-legend-row">
+          <span className="legend-swatch legend-swatch-route" />
+          <span>Recovery route</span>
+          <small>orange = current transport, pale gold = port corridor</small>
+        </div>
+      </div>
       {!verifiedMap ? (
         <div className="map-empty-state">
           <strong>Verified CO2 layers are still catching up.</strong>
           <span>
-            {visibleTrashTargets.length
+            {anchoredTrashTargets.length
               ? "Trash and routing overlays are shown from the model-first transport prediction while the CO2 surface is being verified. "
               : ""}
             {sourceSummary || "The current CO2 layer is provisional. It uses only real data paths and stays limited until the checkpoint-backed grid is ready."}

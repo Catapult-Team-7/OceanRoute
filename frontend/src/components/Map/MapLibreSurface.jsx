@@ -44,6 +44,8 @@ function cellPolygonFeature(id, lon, lat, properties = {}, latStep = 2, lonStep 
 export default function MapLibreSurface({
   basemapStyle = "satellite",
   heatmapFeatures = [],
+  co2Zones = [],
+  trashZones = [],
   co2Hotspots = [],
   trashTargets = [],
   routeSegments = [],
@@ -100,6 +102,64 @@ export default function MapLibreSurface({
       })),
     }),
     [routeSegments]
+  );
+
+  const co2ZoneGeojson = useMemo(
+    () => ({
+      type: "FeatureCollection",
+      features: co2Zones.map((feature) => ({
+        ...feature,
+        properties: {
+          ...feature.properties,
+          fill_color:
+            feature.properties.severity === "critical"
+              ? "rgba(255, 59, 118, 0.32)"
+              : feature.properties.severity === "high"
+                ? "rgba(255, 105, 168, 0.24)"
+                : feature.properties.severity === "elevated"
+                  ? "rgba(255, 150, 200, 0.18)"
+                  : "rgba(255, 196, 224, 0.13)",
+          line_color:
+            feature.properties.severity === "critical"
+              ? "#ff4f93"
+              : feature.properties.severity === "high"
+                ? "#ff78b2"
+                : feature.properties.severity === "elevated"
+                  ? "#ff9fd0"
+                  : "#ffc8e2",
+        },
+      })),
+    }),
+    [co2Zones]
+  );
+
+  const trashZoneGeojson = useMemo(
+    () => ({
+      type: "FeatureCollection",
+      features: trashZones.map((feature) => ({
+        ...feature,
+        properties: {
+          ...feature.properties,
+          fill_color:
+            feature.properties.severity === "critical"
+              ? "rgba(255, 106, 48, 0.34)"
+              : feature.properties.severity === "high"
+                ? "rgba(255, 158, 55, 0.28)"
+                : feature.properties.severity === "elevated"
+                  ? "rgba(255, 201, 79, 0.21)"
+                  : "rgba(255, 226, 130, 0.16)",
+          line_color:
+            feature.properties.severity === "critical"
+              ? "#ff7a2f"
+              : feature.properties.severity === "high"
+                ? "#ffae44"
+                : feature.properties.severity === "elevated"
+                  ? "#ffd15e"
+                  : "#ffe59c",
+        },
+      })),
+    }),
+    [trashZones]
   );
 
   const routeEndpointGeojson = useMemo(
@@ -205,7 +265,7 @@ export default function MapLibreSurface({
   );
 
   return (
-    <MapLibreMap mapStyle={MAP_STYLES[basemapStyle] || MAP_STYLES.satellite} reuseMaps>
+    <MapLibreMap mapStyle={MAP_STYLES[basemapStyle] || MAP_STYLES.satellite} reuseMaps renderWorldCopies={false}>
       {heatmapFeatures.length ? (
         <Source id="co2-field-source" type="geojson" data={heatmapGeojson}>
           <Layer
@@ -242,6 +302,70 @@ export default function MapLibreSurface({
                 0.3,
                 4,
                 0.55,
+              ],
+            }}
+          />
+        </Source>
+      ) : null}
+
+      {co2Zones.length ? (
+        <Source id="co2-zones-source" type="geojson" data={co2ZoneGeojson}>
+          <Layer
+            id="co2-zones-fill"
+            type="fill"
+            paint={{
+              "fill-color": ["get", "fill_color"],
+              "fill-opacity": 1,
+            }}
+          />
+          <Layer
+            id="co2-zones-outline"
+            type="line"
+            paint={{
+              "line-color": ["get", "line_color"],
+              "line-opacity": 0.95,
+              "line-width": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                0,
+                1.2,
+                2,
+                2.2,
+                4,
+                3.2,
+              ],
+            }}
+          />
+        </Source>
+      ) : null}
+
+      {trashZones.length ? (
+        <Source id="trash-zones-source" type="geojson" data={trashZoneGeojson}>
+          <Layer
+            id="trash-zones-fill"
+            type="fill"
+            paint={{
+              "fill-color": ["get", "fill_color"],
+              "fill-opacity": 1,
+            }}
+          />
+          <Layer
+            id="trash-zones-outline"
+            type="line"
+            paint={{
+              "line-color": ["get", "line_color"],
+              "line-opacity": 0.98,
+              "line-width": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                0,
+                1.4,
+                2,
+                2.6,
+                4,
+                3.6,
               ],
             }}
           />
@@ -333,11 +457,11 @@ export default function MapLibreSurface({
                 ["linear"],
                 ["zoom"],
                 0,
-                4,
+                2.5,
                 2,
-                6,
+                4.5,
                 4,
-                8,
+                6,
               ],
             }}
           />
