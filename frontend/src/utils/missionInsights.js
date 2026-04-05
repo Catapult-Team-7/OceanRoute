@@ -43,12 +43,11 @@ function coordinateOf(feature) {
 }
 
 export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
-  if (!verifiedMap) return [];
   const candidateCells = points.filter(
     (point) =>
-      (point.properties.route_priority || 0) >= 0.65 ||
-      (point.properties.weakening_score || 0) >= 0.35 ||
-      (point.properties.anomaly_score || 0) >= 0.7
+      (point.properties.route_priority || 0) >= (verifiedMap ? 0.65 : 0.5) ||
+      (point.properties.weakening_score || 0) >= (verifiedMap ? 0.35 : 0.22) ||
+      (point.properties.anomaly_score || 0) >= (verifiedMap ? 0.7 : 0.5)
   );
   if (!candidateCells.length) return [];
 
@@ -95,16 +94,73 @@ export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
         lat,
         lon,
         clusterSize,
-        label: clusterSize > 1 ? `Recovery cluster (${clusterSize})` : "Recovery target",
+        label: clusterSize > 1 ? `${verifiedMap ? "Recovery" : "Provisional recovery"} cluster (${clusterSize})` : verifiedMap ? "Recovery target" : "Provisional recovery target",
         routeTarget: port,
         weakening: group.maxWeakening,
         routePriority: group.maxRoutePriority,
         anomalyScore: group.maxAnomalyScore,
         meanFlux: group.meanFluxAccumulator / Math.max(clusterSize, 1),
+        provisional: !verifiedMap,
       };
     })
     .sort((a, b) => b.routePriority + b.weakening - (a.routePriority + a.weakening))
     .slice(0, 18);
+}
+
+export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets = [], zoom = 1.5) {
+  const sourceHotspots = observedHotspots.length ? observedHotspots : fallbackTargets;
+  if (!sourceHotspots.length) {
+    return [];
+  }
+
+  const clusterStep = clusterWindowForZoom(zoom);
+  const groups = new Map();
+  for (const item of sourceHotspots) {
+    const latKey = Math.round(item.lat / clusterStep) * clusterStep;
+    const lonKey = Math.round(normalizeLon(item.lon) / clusterStep) * clusterStep;
+    const key = `${latKey}:${lonKey}`;
+    const weight = item.intensity || 1;
+    const current = groups.get(key) || {
+      items: [],
+      weightSum: 0,
+      latSum: 0,
+      lonSum: 0,
+      intensity: 0,
+      nearestPort: null,
+    };
+    current.items.push(item);
+    current.weightSum += weight;
+    current.latSum += item.lat * weight;
+    current.lonSum += item.lon * weight;
+    current.intensity = Math.max(current.intensity, item.intensity || 0);
+    current.nearestPort = current.nearestPort || item.nearest_port || null;
+    groups.set(key, current);
+  }
+
+  return Array.from(groups.values())
+    .map((group, index) => ({
+      id: `trash-cluster-${index}`,
+      label:
+        group.items.length > 1
+          ? `${group.items.some((item) => item.observed) ? "Trash" : "Predicted trash"} cluster (${group.items.length})`
+          : group.items[0].label,
+      lat: group.latSum / Math.max(group.weightSum, 0.001),
+      lon: normalizeLon(group.lonSum / Math.max(group.weightSum, 0.001)),
+      clusterSize: group.items.length,
+      intensity: group.intensity,
+      routeTarget: group.nearestPort
+        ? {
+            name: group.nearestPort.name,
+            lat: group.nearestPort.lat,
+            lon: group.nearestPort.lon,
+            country: group.nearestPort.country,
+          }
+        : null,
+      observed: group.items.some((item) => item.observed),
+      source: group.items[0].source,
+      metadata: group.items[0].metadata || {},
+    }))
+    .sort((a, b) => (b.intensity || 0) - (a.intensity || 0));
 }
 
 export function buildTopMissionTargets(points, anomalies, zoom = 1.5, verifiedMap = false) {

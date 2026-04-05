@@ -11,6 +11,7 @@ export default function MapControls() {
   const basemapStyle = useOceanStore((state) => state.basemapStyle);
   const setSelectedRegion = useOceanStore((state) => state.setSelectedRegion);
   const setBasemapStyle = useOceanStore((state) => state.setBasemapStyle);
+  const requestRefresh = useOceanStore((state) => state.requestRefresh);
 
   return (
     <div className="map-controls">
@@ -36,6 +37,10 @@ export default function MapControls() {
           {item.label}
         </button>
       ))}
+      <div className="map-controls-title">Data</div>
+      <button type="button" onClick={() => requestRefresh()}>
+        Refresh
+      </button>
     </div>
   );
 }

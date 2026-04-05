@@ -19,7 +19,7 @@ const MODEL_LIMITS = [
   },
   {
     title: "Biogeochemical drivers are incomplete",
-    copy: "Currents, salinity, temperature, sea level, and atmospheric CO2 are supported, but chlorophyll and richer ecosystem drivers are still missing.",
+    copy: "Currents, salinity, temperature, sea level, and atmospheric CO2 are supported, but debris observations, vessel intelligence, and richer ecosystem drivers are still missing.",
   },
   {
     title: "Routing is partially forced",
@@ -31,16 +31,20 @@ const NEXT_DATASETS = [
   "Global ERA5 grids or regional tiles for wind, pressure, radiation, and waves",
   "HYCOM or Copernicus current fields for advection and routing",
   "Copernicus salinity grids aligned to the same monthly mesh",
-  "NASA Ocean Color chlorophyll-a fields for biological uptake",
+  "Measured marine debris observations for replacing modeled trash targets",
+  "AIS vessel movement, identity, and port visits for real route feasibility",
   "Plastic/debris concentration observations for route supervision rather than hand-authored hotspots",
 ];
 
 export default function MLLab() {
   const [status, setStatus] = useState(null);
+  const [artifacts, setArtifacts] = useState(null);
   const [apiDrafts, setApiDrafts] = useState([]);
   const [form, setForm] = useState(DEFAULT_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingApis, setIsSavingApis] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [previewById, setPreviewById] = useState({});
   const [previewingId, setPreviewingId] = useState("");
   const [syncingId, setSyncingId] = useState("");
@@ -81,6 +85,27 @@ export default function MLLab() {
     loadHealth();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadArtifacts() {
+      try {
+        const response = await fetch(`${API_BASE}/api/ml/artifacts`);
+        const data = await response.json();
+        if (!cancelled) setArtifacts(data);
+      } catch (error) {
+        console.error("Failed to load ML artifacts", error);
+      }
+    }
+
+    loadArtifacts();
+    const interval = window.setInterval(loadArtifacts, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
     };
   }, []);
 
@@ -153,6 +178,55 @@ export default function MLLab() {
       setActionMessage(`Training failed to start: ${error.message}`);
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function prepareArtifacts() {
+    setIsPreparing(true);
+    try {
+      await saveApis();
+      const response = await fetch(`${API_BASE}/api/ml/prepare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(errorBody || `Prepare request failed with status ${response.status}`);
+      }
+      const data = await response.json();
+      setActionMessage(`Prepared artifacts: ${data.tensor_build?.tensor_dir || data.manifest_path}`);
+    } catch (error) {
+      console.error("Failed to prepare artifacts", error);
+      setActionMessage(`Prepare failed: ${error.message}`);
+    } finally {
+      setIsPreparing(false);
+    }
+  }
+
+  async function publishArtifacts() {
+    setIsPublishing(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/ml/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ region: "global", resolution: "2deg" }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(errorBody || `Publish request failed with status ${response.status}`);
+      }
+      const data = await response.json();
+      if (data.status === "blocked") {
+        setActionMessage(`Publish blocked: ${data.message || "not enough real monthly history yet."}`);
+      } else {
+        setActionMessage(`Published verified map for ${data.metadata?.date || "latest valid month"}.`);
+      }
+    } catch (error) {
+      console.error("Failed to publish artifacts", error);
+      setActionMessage(`Publish failed: ${error.message}`);
+    } finally {
+      setIsPublishing(false);
     }
   }
 
@@ -317,6 +391,12 @@ export default function MLLab() {
             <button type="button" className="secondary-button" onClick={saveAndStartHackathonTraining}>
               Save + Start Training
             </button>
+            <button type="button" className="secondary-button" onClick={prepareArtifacts} disabled={isPreparing}>
+              {isPreparing ? "Preparing…" : "Prepare Artifacts"}
+            </button>
+            <button type="button" className="secondary-button" onClick={publishArtifacts} disabled={isPublishing}>
+              {isPublishing ? "Publishing…" : "Publish Verified Map"}
+            </button>
             <button type="button" className="secondary-button" onClick={applyQuickValidationPreset}>
               Quick Validation Mode
             </button>
@@ -427,6 +507,16 @@ export default function MLLab() {
           <p className="subtle">
             Training source: <strong>{dataSummary.source || "unconfigured_real_pipeline"}</strong>
           </p>
+          {artifacts?.training_manifest ? (
+            <p className="subtle">
+              Manifest: <strong>{artifacts.training_manifest.status}</strong>
+              {artifacts.training_manifest.checkpoint_path
+                ? ` · ${artifacts.training_manifest.checkpoint_path}`
+                : artifacts.training_manifest.resume_checkpoint_path
+                  ? ` · resume ${artifacts.training_manifest.resume_checkpoint_path}`
+                  : ""}
+            </p>
+          ) : null}
           <div className="ml-metrics-grid">
             <article className="ml-metric-card">
               <span className="metric-label">
@@ -636,6 +726,26 @@ export default function MLLab() {
         </div>
 
         <div className="ml-section">
+          <h3>Batch Artifacts</h3>
+          <div className="ml-limit-list">
+            <article className="ml-limit-card">
+              <strong>Prepared tensors</strong>
+              <p className="subtle">
+                {artifacts?.data_manifest?.tensor_build?.tensor_dir || "No prepared tensor manifest yet."}
+              </p>
+            </article>
+            <article className="ml-limit-card">
+              <strong>Published verified map</strong>
+              <p className="subtle">
+                {artifacts?.published_global_2deg?.verified_map
+                  ? `Verified for ${artifacts.published_global_2deg.date}`
+                  : "No published verified map bundle yet."}
+              </p>
+            </article>
+          </div>
+        </div>
+
+        <div className="ml-section">
           <h3>Current Training Path</h3>
           <ol className="ml-steps">
             {usingRealData ? (
@@ -643,16 +753,16 @@ export default function MLLab() {
                 <li>Load SOCAT surface-ocean observations from the configured source URL.</li>
                 <li>Load NOAA GML monthly atmospheric CO2 and join it by year and month.</li>
                 <li>Build monthly aligned tensors from ERA5 plus Copernicus salinity, currents, temperature, and sea level.</li>
-                <li>Train the ConvLSTM on monthly sequences and save a checkpoint for later inference.</li>
-                <li>Keep high-frequency Copernicus routing files ready for live-map inference.</li>
+                <li>Train the ConvLSTM on monthly sequences and autosave resumable checkpoints every 10 epochs.</li>
+                <li>Publish a verified map artifact so the homepage serves a stable product instead of rebuilding live.</li>
               </>
             ) : (
               <>
                 <li>Enable SOCAT and NOAA GML connectors and keep their source URLs valid.</li>
                 <li>Point ERA5 to your local folder or a real remote source.</li>
                 <li>Sync Copernicus monthly physics and routing subsets once dataset IDs and credentials are configured.</li>
-                <li>Start training only after those real inputs are confirmed.</li>
-                <li>No synthetic fallback is used anywhere in this training path.</li>
+                <li>Run prepare to build reusable tensors before large cluster training jobs.</li>
+                <li>Publish verified artifacts after training so the homepage does not depend on live rebuilds.</li>
               </>
             )}
           </ol>

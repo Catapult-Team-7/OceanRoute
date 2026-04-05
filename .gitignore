@@ -12,3 +12,5 @@ frontend/dist/
 
 logs/
 Training_Data/
+backend/artifacts/
+backend/ml/checkpoints/oceanpulse_resume.pt

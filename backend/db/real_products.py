@@ -86,6 +86,60 @@ def _resolve_target_month(months: list[tuple[int, int]], requested: tuple[int, i
     return eligible[-1]
 
 
+def _resolve_latest_publishable_target(
+    months: list[tuple[int, int]],
+    requested: tuple[int, int] | None,
+    trained_month_window: int,
+) -> tuple[tuple[int, int], int, int]:
+    if not months:
+        raise RealDataLoadError("No overlapping Copernicus, ERA5, and NOAA monthly records are available.")
+
+    if requested is None:
+        candidates = list(reversed(months))
+    else:
+        candidates = [month for month in months if month <= requested]
+        if not candidates:
+            raise RealDataLoadError(
+                f"Requested month {requested[0]}-{requested[1]:02d} is earlier than the available overlapping driver data."
+            )
+        candidates = list(reversed(candidates))
+
+    for candidate in candidates:
+        target_index = months.index(candidate)
+        try:
+            month_window = _resolve_inference_month_window(months, target_index, trained_month_window)
+            return candidate, target_index, month_window
+        except RealDataLoadError:
+            continue
+
+    latest = candidates[0]
+    raise RealDataLoadError(
+        f"Not enough gridded monthly history for inference at {latest[0]}-{latest[1]:02d}. Need at least 1 prior month."
+    )
+
+
+def _resolve_inference_month_window(
+    available_months: list[tuple[int, int]],
+    target_index: int,
+    trained_month_window: int,
+) -> int:
+    available_prior = target_index
+    if available_prior >= trained_month_window:
+        return trained_month_window
+
+    # OceanPulseLSTM accepts variable sequence length, so allow the latest
+    # real map to run with whatever prior real history exists, down to a
+    # single prior month, instead of blocking the verified map entirely.
+    fallback_window = min(trained_month_window, available_prior)
+    if fallback_window >= 1:
+        return fallback_window
+
+    raise RealDataLoadError(
+        f"Not enough gridded monthly history for inference at {available_months[target_index][0]}-"
+        f"{available_months[target_index][1]:02d}. Need at least 1 prior month."
+    )
+
+
 def _scalar_month_value(frame: pd.DataFrame, year: int, month: int, column: str, default: float = 0.0) -> float:
     subset = frame[(frame["year"] == year) & (frame["month"] == month)]
     if subset.empty or column not in subset.columns:
@@ -226,8 +280,12 @@ def build_real_grid_bundle(
     copernicus_directory: str | Path | None,
     reference_now: datetime,
 ) -> RealGridBundle:
-    if not trainer.state.model_ready:
-        raise RealDataLoadError("A trained checkpoint is required before the real gridded map can be served.")
+    try:
+        trainer._load_spatial_model()
+    except RealDataLoadError:
+        raise
+    except Exception as exc:
+        raise RealDataLoadError(f"A trained checkpoint is required before the real gridded map can be served: {exc}") from exc
 
     atmospheric, era_monthly, copernicus_monthly = _load_monthly_drivers(
         noaa_gml_url=noaa_gml_url,
@@ -238,18 +296,19 @@ def build_real_grid_bundle(
     months, monthly_features, monthly_atm, lat_values, lon_values = _build_feature_grids(
         atmospheric, era_monthly, copernicus_monthly, resolution
     )
-    target_month = _resolve_target_month(months, _month_from_string(date))
-    month_window = int(trainer.expected_month_window())
-    target_index = months.index(target_month)
-    if target_index < month_window:
-        raise RealDataLoadError(
-            f"Not enough gridded monthly history for inference at {target_month[0]}-{target_month[1]:02d}. "
-            f"Need at least {month_window} prior months."
-        )
+    trained_month_window = int(trainer.expected_month_window())
+    target_month, target_index, month_window = _resolve_latest_publishable_target(
+        months,
+        _month_from_string(date),
+        trained_month_window,
+    )
 
     sequence_months = months[target_index - month_window : target_index]
     sequence = np.stack([monthly_features[item] for item in sequence_months], axis=0)
     predicted_grid = trainer.predict_spatial_sequence(sequence, monthly_atm[target_month])
+    predicted_mean = float(np.nanmean(predicted_grid))
+    predicted_std = float(np.nanstd(predicted_grid))
+    deviation_scale = max(predicted_std, 0.2)
 
     era_wind = _scalar_month_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
     observed_flux = _build_observed_flux_grid(socat_url, atmospheric, target_month, resolution, era_wind)
@@ -267,12 +326,14 @@ def build_real_grid_bundle(
             observed_value = observed_flux.get(cell_key, predicted_flux)
             if cell_key in observed_flux:
                 observed_support_cells += 1
-            weakening = max(0.0, observed_value - predicted_flux)
+            observed_gap = abs(observed_value - predicted_flux) if cell_key in observed_flux else 0.0
+            model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
+            weakening = max(observed_gap, model_deviation * 0.35)
             current_u = float(target_features[2, i, j] * 3.0)
             current_v = float(target_features[3, i, j] * 3.0)
             current_speed = math.sqrt((current_u**2) + (current_v**2))
-            route_priority = max(0.0, weakening * 1.8 + current_speed * 0.6 + (era_wind / 20.0))
-            anomaly_score = min(1.0, weakening * 0.5 + current_speed * 0.08)
+            route_priority = max(0.0, observed_gap * 1.4 + model_deviation * 0.9 + current_speed * 0.45 + (era_wind / 24.0))
+            anomaly_score = min(1.0, observed_gap * 0.45 + model_deviation * 0.35 + current_speed * 0.06)
             rows.append(
                 FluxPoint(
                     lat=float(lat),
@@ -291,7 +352,7 @@ def build_real_grid_bundle(
                     source="MODEL",
                 )
             )
-            if anomaly_score >= 0.7 and len(anomalies) < 20:
+            if anomaly_score >= 0.35 and len(anomalies) < 24:
                 anomalies.append(
                     AnomalyRecord(
                         id=f"real-{target_month[0]}-{target_month[1]}-{i}-{j}",
@@ -301,7 +362,7 @@ def build_real_grid_bundle(
                         anomaly_score=round(anomaly_score, 4),
                         deviation_pct=round(((observed_value - predicted_flux) / max(abs(predicted_flux), 0.25)) * 100.0, 1),
                         detected_at=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
-                        severity="high" if anomaly_score >= 0.85 else "medium",
+                        severity="critical" if anomaly_score >= 0.8 else "high" if anomaly_score >= 0.55 else "medium",
                     )
                 )
 
@@ -320,6 +381,8 @@ def build_real_grid_bundle(
             "Map grid built from Copernicus monthly physics, ERA5 monthly wind forcing, NOAA atmospheric CO2, "
             "and a trained checkpoint. Sparse SOCAT observations are used only for observed support and anomaly anchoring."
         ),
+        "trained_month_window": trained_month_window,
+        "effective_inference_month_window": month_window,
         "observed_support_cells": observed_support_cells,
     }
     return RealGridBundle(rows=rows, metadata=metadata, anomalies=anomalies)
@@ -335,8 +398,14 @@ def build_real_point_bundle(
     era_directory: str | Path | None,
     copernicus_directory: str | Path | None,
 ) -> RealPointBundle:
-    if not trainer.state.model_ready:
-        raise RealDataLoadError("A trained checkpoint is required before point inference can use real gridded drivers.")
+    try:
+        trainer._load_spatial_model()
+    except RealDataLoadError:
+        raise
+    except Exception as exc:
+        raise RealDataLoadError(
+            f"A trained checkpoint is required before point inference can use real gridded drivers: {exc}"
+        ) from exc
 
     resolution = "2deg"
     atmospheric, era_monthly, copernicus_monthly = _load_monthly_drivers(
@@ -348,7 +417,11 @@ def build_real_point_bundle(
     months, monthly_features, monthly_atm, lat_values, lon_values = _build_feature_grids(
         atmospheric, era_monthly, copernicus_monthly, resolution
     )
-    month_window = int(trainer.expected_month_window())
+    trained_month_window = int(trainer.expected_month_window())
+    if len(months) <= 1:
+        raise RealDataLoadError("Not enough monthly driver history for checkpoint-backed point inference.")
+
+    month_window = min(trained_month_window, len(months) - 1)
     if len(months) <= month_window:
         raise RealDataLoadError("Not enough monthly driver history for checkpoint-backed point inference.")
 

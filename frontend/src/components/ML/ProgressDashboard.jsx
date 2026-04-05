@@ -5,6 +5,7 @@ import { API_BASE } from "../../utils/constants";
 
 export default function ProgressDashboard() {
   const [status, setStatus] = useState(null);
+  const [artifacts, setArtifacts] = useState(null);
   const [backendHealth, setBackendHealth] = useState({ reachable: false, detail: "Checking backend..." });
 
   useEffect(() => {
@@ -40,14 +41,27 @@ export default function ProgressDashboard() {
       }
     }
 
+    async function loadArtifacts() {
+      try {
+        const response = await fetch(`${API_BASE}/api/ml/artifacts`);
+        const data = await response.json();
+        if (!cancelled) setArtifacts(data);
+      } catch (error) {
+        if (!cancelled) setArtifacts(null);
+      }
+    }
+
     loadHealth();
     loadStatus();
+    loadArtifacts();
     const interval = window.setInterval(loadStatus, 1200);
     const healthInterval = window.setInterval(loadHealth, 2500);
+    const artifactInterval = window.setInterval(loadArtifacts, 4000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
       window.clearInterval(healthInterval);
+      window.clearInterval(artifactInterval);
     };
   }, []);
 
@@ -148,6 +162,40 @@ export default function ProgressDashboard() {
           </article>
         </div>
         {status?.error ? <p className="error-copy">Training error: {status.error}</p> : null}
+      </div>
+
+      <div className="ml-section">
+        <h3>Published Artifacts</h3>
+        <div className="progress-timeline">
+          <article className="progress-card">
+            <span className="metric-label">
+              Data manifest
+              <InfoHint label="Data manifest" description="Prepared tensor and source coverage summary for batch or cluster training." />
+            </span>
+            <strong>{artifacts?.data_manifest ? "Ready" : "Missing"}</strong>
+            <small>{artifacts?.data_manifest?.tensor_build?.tensor_dir || "Run prepare to build reusable tensors."}</small>
+          </article>
+          <article className="progress-card">
+            <span className="metric-label">
+              Training manifest
+              <InfoHint label="Training manifest" description="Persistent training run metadata and checkpoint state." />
+            </span>
+            <strong>{artifacts?.training_manifest?.status || "missing"}</strong>
+            <small>
+              {artifacts?.training_manifest?.checkpoint_path ||
+                artifacts?.training_manifest?.resume_checkpoint_path ||
+                "No checkpoint manifest yet."}
+            </small>
+          </article>
+          <article className="progress-card">
+            <span className="metric-label">
+              Published map
+              <InfoHint label="Published map" description="Verified map bundle served to the homepage before any live rebuild attempt." />
+            </span>
+            <strong>{artifacts?.published_global_2deg?.verified_map ? "Verified" : "Missing"}</strong>
+            <small>{artifacts?.published_global_2deg?.date || "Run publish to generate a served map product."}</small>
+          </article>
+        </div>
       </div>
     </section>
   );

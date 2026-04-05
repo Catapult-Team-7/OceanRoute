@@ -2,17 +2,26 @@ import { useEffect } from "react";
 
 import { API_BASE } from "../utils/constants";
 import { useOceanStore } from "../store/oceanStore";
+import { buildFallbackHeatmap } from "../utils/demoMissionData";
 import { fetchJson } from "../utils/fetchJson";
 
 export function useHeatmapData() {
+  const currentView = useOceanStore((state) => state.currentView);
   const selectedDate = useOceanStore((state) => state.selectedDate);
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
+  const refreshNonce = useOceanStore((state) => state.refreshNonce);
   const setHeatmapData = useOceanStore((state) => state.setHeatmapData);
   const setLoading = useOceanStore((state) => state.setLoading);
 
   useEffect(() => {
+    if (currentView !== "mission") return undefined;
+
     let cancelled = false;
     const controller = new AbortController();
+
+    if (!useOceanStore.getState().heatmapData) {
+      setHeatmapData(buildFallbackHeatmap(selectedDate, selectedRegion));
+    }
 
     async function load(showSpinner = true) {
       if (showSpinner) setLoading(true);
@@ -30,7 +39,6 @@ export function useHeatmapData() {
       } catch (error) {
         if (!cancelled && error.name !== "AbortError") {
           console.error("Failed to fetch heatmap", error);
-          setHeatmapData(null);
         }
       } finally {
         if (!cancelled && showSpinner) setLoading(false);
@@ -38,13 +46,9 @@ export function useHeatmapData() {
     }
 
     load();
-    const pollTimer = window.setInterval(() => {
-      load(false);
-    }, 20000);
     return () => {
       cancelled = true;
-      window.clearInterval(pollTimer);
       controller.abort();
     };
-  }, [selectedDate, selectedRegion, setHeatmapData, setLoading]);
+  }, [currentView, refreshNonce, selectedDate, selectedRegion, setHeatmapData, setLoading]);
 }

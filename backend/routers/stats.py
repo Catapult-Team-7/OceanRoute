@@ -1,10 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db.crud import get_history, get_stats
 from db.database import get_repo
 from db.demo_data import DemoOceanRepository
+from ingest.real_training_data import RealDataLoadError
 
 router = APIRouter()
 
@@ -24,4 +25,7 @@ async def history(
     months: int = Query(default=12, ge=3, le=24),
     repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
 ):
-    return {"lat": lat, "lon": lon, "history": await get_history(repo, lat=lat, lon=lon, months=months)}
+    try:
+        return {"lat": lat, "lon": lon, "history": await get_history(repo, lat=lat, lon=lon, months=months)}
+    except RealDataLoadError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

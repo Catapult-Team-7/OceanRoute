@@ -4,17 +4,20 @@ import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 
 import { useHeatmapData } from "../../hooks/useHeatmapData";
+import { useTrashData } from "../../hooks/useTrashData";
 import { useOceanStore } from "../../store/oceanStore";
 import { fluxToColor } from "../../utils/colorScale";
-import { buildRecoveryTargets, buildTopMissionTargets } from "../../utils/missionInsights";
+import { buildDisplayTrashTargets, buildRecoveryTargets, buildTopMissionTargets } from "../../utils/missionInsights";
 
 const MapLibreSurface = lazy(() => import("./MapLibreSurface"));
 const INITIAL_VIEW_STATE = { longitude: 0, latitude: 12, zoom: 1.15, pitch: 0, bearing: 0 };
 
 export default function OceanMap() {
   useHeatmapData();
+  useTrashData();
 
   const heatmapData = useOceanStore((state) => state.heatmapData);
+  const trashData = useOceanStore((state) => state.trashData);
   const anomalies = useOceanStore((state) => state.anomalies);
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
   const basemapStyle = useOceanStore((state) => state.basemapStyle);
@@ -29,6 +32,10 @@ export default function OceanMap() {
     () => buildRecoveryTargets(points, viewState.zoom, verifiedMap),
     [points, verifiedMap, viewState.zoom]
   );
+  const trashTargets = useMemo(
+    () => buildDisplayTrashTargets(trashData?.hotspots || [], recoveryTargets, viewState.zoom),
+    [trashData?.hotspots, recoveryTargets, viewState.zoom]
+  );
   const prioritySummary = useMemo(
     () => buildTopMissionTargets(points, anomalies, viewState.zoom, verifiedMap),
     [anomalies, points, verifiedMap, viewState.zoom]
@@ -36,7 +43,7 @@ export default function OceanMap() {
 
   const routeSegments = useMemo(
     () =>
-      recoveryTargets
+      trashTargets
         .filter((item) => item.routeTarget)
         .map((item) => ({
         id: `${item.id}-route`,
@@ -46,15 +53,25 @@ export default function OceanMap() {
         ],
         source: [item.lon, item.lat],
         target: [item.routeTarget.lon, item.routeTarget.lat],
-        density: item.routePriority,
+        density: item.routePriority || item.intensity || 0,
         label: `${item.label} to ${item.routeTarget.name}`,
-        weakening: item.weakening,
+        weakening: item.weakening || 0,
       })),
-    [recoveryTargets]
+    [trashTargets]
   );
 
-  const sinkNodes = useMemo(
-    () => points.filter((point, index) => point.properties.predicted_flux < 0 && index % 5 === 0).slice(0, 320),
+  const hotspotNodes = useMemo(
+    () =>
+      [...points]
+        .filter((point) => point?.properties)
+        .sort(
+          (a, b) =>
+            Math.abs((b.properties.predicted_flux || 0) - (b.properties.observed_flux || 0)) +
+              (b.properties.weakening_score || 0) -
+            (Math.abs((a.properties.predicted_flux || 0) - (a.properties.observed_flux || 0)) +
+              (a.properties.weakening_score || 0))
+        )
+        .slice(0, 320),
     [points]
   );
 
@@ -73,19 +90,21 @@ export default function OceanMap() {
 
   const routeLabels = useMemo(
     () =>
-      recoveryTargets.slice(0, viewState.zoom > 2.2 ? 10 : 5).map((item) => ({
+      trashTargets.slice(0, viewState.zoom > 2.2 ? 10 : 5).map((item) => ({
         id: `${item.id}-label`,
         position: [item.lon, item.lat],
         label: item.label,
       })),
-    [recoveryTargets, viewState.zoom]
+    [trashTargets, viewState.zoom]
   );
 
   const tooltipText = ({ object }) => {
     if (!object) return null;
     if (object.routeTarget?.name) {
       return {
-        text: `${object.label}\nClustered recovery cells: ${object.clusterSize}\nRoute priority: ${object.routePriority.toFixed(2)}\nNearest port: ${object.routeTarget.name}`,
+        text: `${object.label}\nObserved trash intensity: ${(
+          object.intensity || object.routePriority || 0
+        ).toFixed(2)}\nNearest port: ${object.routeTarget.name}`,
       };
     }
     if (object.source && object.target) {
@@ -107,38 +126,41 @@ export default function OceanMap() {
   };
 
   const layers = useMemo(
-    () =>
-      verifiedMap
-        ? [
+    () => {
+      const activeLayers = [];
+      activeLayers.push(
       new ScatterplotLayer({
         id: "flux-cells",
         data: displayPoints,
         getPosition: (d) => d.geometry.coordinates,
         radiusUnits: "meters",
         getRadius: (d) => 65000 + Math.min(Math.abs(d.properties.predicted_flux), 4) * 18000,
-        getFillColor: (d) => [...fluxToColor(d.properties.predicted_flux), 112],
-        getLineColor: (d) => [...fluxToColor(d.properties.predicted_flux), 190],
-        lineWidthMinPixels: viewState.zoom > 2 ? 1 : 0,
-        stroked: viewState.zoom > 2,
+        getFillColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 112 : 58],
+        getLineColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 190 : 112],
+        lineWidthMinPixels: viewState.zoom > 2 ? 1 : 0.5,
+        stroked: true,
         pickable: true,
       }),
       new PathLayer({
         id: "recovery-routes",
         data: routeSegments,
         getPath: (d) => d.path,
-        getColor: (d) => (d.weakening > 0.35 ? [255, 120, 98, 225] : [255, 209, 102, 214]),
+        getColor: (d) =>
+          d.weakening > 0.35
+            ? [255, 120, 98, verifiedMap ? 225 : 150]
+            : [255, 209, 102, verifiedMap ? 214 : 138],
         getWidth: (d) => 9000 + d.density * 15000,
-        widthMinPixels: 3,
+        widthMinPixels: verifiedMap ? 3 : 2,
         rounded: true,
         pickable: true,
       }),
       new ScatterplotLayer({
         id: "sink-nodes",
-        data: sinkNodes,
+        data: hotspotNodes,
         getPosition: (d) => d.geometry.coordinates,
         getRadius: (d) => 10000 + Math.abs(d.properties.predicted_flux) * 6000,
         getFillColor: (d) =>
-          d.properties.weakening_score > 0.3 ? [125, 231, 245, 78] : [64, 219, 168, 62],
+          d.properties.predicted_flux < 0 ? [64, 219, 168, 72] : [255, 135, 102, 72],
         getLineColor: [214, 244, 255, 72],
         lineWidthMinPixels: 1,
         stroked: true,
@@ -165,14 +187,19 @@ export default function OceanMap() {
         lineWidthMinPixels: 1,
         stroked: true,
         pickable: true,
-      }),
+      }));
+      if (trashTargets.length) {
+        activeLayers.push(
       new ScatterplotLayer({
-        id: "recovery-targets",
-        data: recoveryTargets,
+        id: "trash-targets",
+        data: trashTargets,
         getPosition: (d) => [d.lon, d.lat],
-        getRadius: (d) => 60000 + d.clusterSize * 15000 + d.routePriority * 40000,
-        getFillColor: (d) => [255, 196, 61, 42 + Math.round(Math.min(d.routePriority, 1.4) * 72)],
-        getLineColor: [255, 230, 160, 180],
+        getRadius: (d) => 60000 + (d.clusterSize || 1) * 15000 + (d.routePriority || d.intensity || 0) * 40000,
+        getFillColor: (d) =>
+          d.observed
+            ? [255, 174, 66, 54 + Math.round(Math.min(d.intensity || 0, 1.4) * 80)]
+            : [255, 196, 61, 42 + Math.round(Math.min(d.routePriority || 0, 1.4) * 72)],
+        getLineColor: (d) => (d.observed ? [255, 232, 188, 200] : [255, 230, 160, 180]),
         lineWidthMinPixels: 3,
         stroked: true,
         pickable: true,
@@ -189,10 +216,25 @@ export default function OceanMap() {
         getTextAnchor: "middle",
         getAlignmentBaseline: "bottom",
         pickable: false,
-      }),
-    ]
-        : [],
-    [anomalies, displayPoints, recoveryTargets, routeLabels, routeSegments, sinkNodes, verifiedMap, viewState.zoom, weakeningZones]
+      }));
+      }
+      if (!verifiedMap && routeSegments.length) {
+        activeLayers.push(
+          new PathLayer({
+            id: "fallback-recovery-routes",
+            data: routeSegments,
+            getPath: (d) => d.path,
+            getColor: [255, 209, 102, 180],
+            getWidth: (d) => 8000 + d.density * 12000,
+            widthMinPixels: 2,
+            rounded: true,
+            pickable: true,
+          })
+        );
+      }
+      return activeLayers;
+    },
+    [anomalies, displayPoints, hotspotNodes, routeLabels, routeSegments, trashTargets, verifiedMap, viewState.zoom, weakeningZones]
   );
 
   return (
@@ -205,10 +247,12 @@ export default function OceanMap() {
             {verifiedMap && prioritySummary.degradationTarget ? (
               <small className="map-brief-subcopy">
                 Top weakening cell: {prioritySummary.degradationTarget.properties.weakening_score.toFixed(2)} · Top route
-                target: {prioritySummary.topRecoveryTarget?.routeTarget?.name || "awaiting routing target"}
+                target: {trashTargets[0]?.routeTarget?.name || "awaiting routing target"}
               </small>
             ) : (
-              <small className="map-brief-subcopy">Checkpoint-backed map refreshes automatically while training and ingestion progress.</small>
+              <small className="map-brief-subcopy">
+                Provisional map overlays stay visible while the verified grid catches up. Checkpoint-backed products refresh automatically as training and ingestion progress.
+              </small>
             )}
           </div>
           <div className="map-brief-actions">
@@ -243,8 +287,13 @@ export default function OceanMap() {
       </DeckGL>
       {!verifiedMap ? (
         <div className="map-empty-state">
-          <strong>No verified ocean layers are available yet.</strong>
-          <span>{sourceSummary || "The current backend map is still demo-backed, so overlays are intentionally hidden."}</span>
+          <strong>Verified CO2 layers are still catching up.</strong>
+          <span>
+            {trashTargets.length
+              ? "Trash and routing overlays are shown only from measured feeds while the CO2 surface is being verified. "
+              : ""}
+            {sourceSummary || "The current CO2 layer is provisional. It uses only real data paths and stays limited until the checkpoint-backed grid is ready."}
+          </span>
         </div>
       ) : null}
     </div>

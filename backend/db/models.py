@@ -34,6 +34,33 @@ class ForecastResponse(BaseModel):
     forecast: list[ForecastPoint]
 
 
+class PortHint(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    country: str | None = None
+    source: str = "nga_world_port_index"
+
+
+class TrashHotspot(BaseModel):
+    id: str
+    label: str
+    lat: float
+    lon: float
+    intensity: float
+    observed: bool = True
+    source: str
+    nearest_port: PortHint | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class TrashResponse(BaseModel):
+    source: str
+    observed: bool
+    source_summary: str
+    hotspots: list[TrashHotspot]
+
+
 class AnomalyRecord(BaseModel):
     id: str
     lat: float
@@ -54,7 +81,7 @@ class HeatmapMetadata(BaseModel):
     inference_mode: str
     trained_model_ready: bool
     verified_map: bool = False
-    map_source: str = "synthetic_demo_grid"
+    map_source: str = "real_grid_unavailable"
     source_summary: str = ""
 
 

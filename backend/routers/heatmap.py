@@ -54,14 +54,14 @@ async def heatmap(
             mean_flux=round(mean_flux, 3),
             sink_area_pct=round(sink_area_pct, 1),
             inference_mode=repo.last_grid_metadata.get(
-                "inference_mode", repo.trainer.state.model_summary.get("mode", "demo_regression")
+                "inference_mode", repo.trainer.state.model_summary.get("mode", "real_grid_pending")
             ),
             trained_model_ready=repo.last_grid_metadata.get("trained_model_ready", repo.trainer.state.model_ready),
             verified_map=repo.last_grid_metadata.get("verified_map", False),
-            map_source=repo.last_grid_metadata.get("map_source", "synthetic_demo_grid"),
+            map_source=repo.last_grid_metadata.get("map_source", "real_grid_unavailable"),
             source_summary=repo.last_grid_metadata.get(
                 "source_summary",
-                "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+                "No verified CO2 ocean layer is available yet. The map remains empty until a checkpoint-backed real grid is ready.",
             ),
         ),
         features=features,

@@ -9,24 +9,6 @@ export default function AnomalyList() {
   const heatmapData = useOceanStore((state) => state.heatmapData);
   const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
 
-  if (!verifiedMap) {
-    return (
-      <section className="sidebar-section">
-        <div className="section-header">
-          <h2 className="metric-label">
-            Anomaly Alerts
-            <InfoHint
-              label="Anomaly Alerts"
-              description="Flags regions where sink behavior is weakening or deviating from expected baseline conditions enough to warrant attention."
-            />
-          </h2>
-          <span>0</span>
-        </div>
-        <p className="empty-state">Anomaly alerts stay hidden until the map is backed by verified gridded data.</p>
-      </section>
-    );
-  }
-
   return (
     <section className="sidebar-section">
       <div className="section-header">
@@ -39,8 +21,11 @@ export default function AnomalyList() {
         </h2>
         <span>{anomalies.length}</span>
       </div>
+      {!verifiedMap ? (
+        <p className="subtle">These alerts are provisional until the verified gridded map is published.</p>
+      ) : null}
       <div className="list-stack">
-        {anomalies.map((anomaly) => (
+        {anomalies.length ? anomalies.map((anomaly) => (
           <button
             key={anomaly.id}
             type="button"
@@ -60,7 +45,7 @@ export default function AnomalyList() {
               />
             </small>
           </button>
-        ))}
+        )) : <p className="empty-state">No anomaly alerts are active for the current map month.</p>}
       </div>
     </section>
   );

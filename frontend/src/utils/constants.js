@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8765";
+export const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || "";
 export const WS_URL = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:8765/ws/live";
 export const MAP_STYLES = {
   satellite: {

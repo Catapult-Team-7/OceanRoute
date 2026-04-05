@@ -7,8 +7,9 @@ import MapToolbar from "./components/Map/MapToolbar";
 import Sidebar from "./components/Sidebar/Sidebar";
 import TimeSlider from "./components/Timeline/TimeSlider";
 import LoadingOverlay from "./components/common/LoadingOverlay";
+import ViewErrorBoundary from "./components/common/ViewErrorBoundary";
 import { useAnomalies } from "./hooks/useAnomalies";
-import { useWebSocket } from "./hooks/useWebSocket";
+import { useMlStatus } from "./hooks/useMlStatus";
 import { useOceanStore } from "./store/oceanStore";
 
 const OceanMap = lazy(() => import("./components/Map/OceanMap"));
@@ -16,8 +17,8 @@ const MLLab = lazy(() => import("./components/ML/MLLab"));
 const ProgressDashboard = lazy(() => import("./components/ML/ProgressDashboard"));
 
 export default function App() {
-  useWebSocket();
   useAnomalies();
+  useMlStatus();
 
   const isLoading = useOceanStore((state) => state.isLoading);
   const currentView = useOceanStore((state) => state.currentView);
@@ -27,36 +28,42 @@ export default function App() {
       <Header />
       <ViewTabs />
       {currentView === "mission" ? (
-        <>
-          <MapStatusBar />
-          <main className="main-layout">
-            <section className="map-column">
-              <div className="map-panel">
-                <Suspense fallback={null}>
-                  <OceanMap />
-                </Suspense>
-                {isLoading ? <LoadingOverlay /> : null}
-              </div>
-              <div className="map-toolbar">
-                <MapToolbar />
-                <TimeSlider />
-              </div>
-            </section>
-            <Sidebar />
-          </main>
-        </>
+        <ViewErrorBoundary resetKey={currentView}>
+          <>
+            <MapStatusBar />
+            <main className="main-layout">
+              <section className="map-column">
+                <div className="map-panel">
+                  <Suspense fallback={null}>
+                    <OceanMap />
+                  </Suspense>
+                  {isLoading ? <LoadingOverlay /> : null}
+                </div>
+                <div className="map-toolbar">
+                  <MapToolbar />
+                  <TimeSlider />
+                </div>
+              </section>
+              <Sidebar />
+            </main>
+          </>
+        </ViewErrorBoundary>
       ) : currentView === "ml" ? (
-        <main className="ml-page">
-          <Suspense fallback={null}>
-            <MLLab />
-          </Suspense>
-        </main>
+        <ViewErrorBoundary resetKey={currentView}>
+          <main className="ml-page">
+            <Suspense fallback={null}>
+              <MLLab />
+            </Suspense>
+          </main>
+        </ViewErrorBoundary>
       ) : (
-        <main className="ml-page">
-          <Suspense fallback={null}>
-            <ProgressDashboard />
-          </Suspense>
-        </main>
+        <ViewErrorBoundary resetKey={currentView}>
+          <main className="ml-page">
+            <Suspense fallback={null}>
+              <ProgressDashboard />
+            </Suspense>
+          </main>
+        </ViewErrorBoundary>
       )}
     </div>
   );

@@ -72,6 +72,18 @@ def _scalar_value(frame: pd.DataFrame, year: int, month: int, column: str, defau
     return float(value.iloc[0])
 
 
+def _winsorize_series(series: pd.Series, lower_q: float = 0.01, upper_q: float = 0.99) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    valid = numeric.dropna()
+    if valid.empty:
+        return numeric
+    lower = float(valid.quantile(lower_q))
+    upper = float(valid.quantile(upper_q))
+    if lower > upper:
+        lower, upper = upper, lower
+    return numeric.clip(lower=lower, upper=upper)
+
+
 def _prepare_target_frame(
     socat_url: str,
     noaa_gml_url: str,
@@ -110,6 +122,8 @@ def _prepare_target_frame(
     )
     merged["wind_speed"] = merged["era5_wind_speed"]
     merged = merged.dropna(subset=["sst", "salinity", "wind_speed", "pco2_ocean", "pco2_atm"])
+    for column in ["sst", "salinity", "wind_speed", "pco2_ocean", "pco2_atm"]:
+        merged[column] = _winsorize_series(merged[column])
     merged["target_flux"] = compute_co2_flux(
         merged["pco2_ocean"].to_numpy(dtype=float),
         merged["pco2_atm"].to_numpy(dtype=float),
@@ -117,6 +131,7 @@ def _prepare_target_frame(
         merged["wind_speed"].to_numpy(dtype=float),
         merged["salinity"].to_numpy(dtype=float),
     )
+    merged["target_flux"] = _winsorize_series(merged["target_flux"], lower_q=0.02, upper_q=0.98)
     merged = merged.replace([np.inf, -np.inf], np.nan).dropna(subset=["target_flux"])
     if merged.empty:
         raise RealDataLoadError("No usable target flux rows were produced for monthly tensor building.")
@@ -283,6 +298,10 @@ def build_monthly_training_tensors(
         "feature_count": int(x_tensor.shape[2]),
         "feature_names": feature_names,
         "target_months": sample_months,
+        "denoising": {
+            "winsorized_columns": ["sst", "salinity", "wind_speed", "pco2_ocean", "pco2_atm", "target_flux"],
+            "target_flux_clip_quantiles": [0.02, 0.98],
+        },
     }
     return TensorBuildResult(
         tensor_dir=tensor_dir,

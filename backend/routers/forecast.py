@@ -1,11 +1,12 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db.crud import get_forecast
 from db.database import get_repo
 from db.demo_data import DemoOceanRepository
 from db.models import ForecastResponse
+from ingest.real_training_data import RealDataLoadError
 
 router = APIRouter()
 
@@ -17,4 +18,7 @@ async def forecast(
     horizon: int = Query(default=72, ge=24, le=72),
     repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
 ):
-    return await get_forecast(repo, lat=lat, lon=lon, horizon=horizon)
+    try:
+        return await get_forecast(repo, lat=lat, lon=lon, horizon=horizon)
+    except RealDataLoadError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

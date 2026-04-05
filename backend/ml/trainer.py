@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from pipeline.artifacts import write_data_manifest, write_training_manifest
 from ingest.fetch_copernicus import (
     CopernicusSyncError,
     default_copernicus_directory,
@@ -49,6 +50,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("oceanpulse.ml")
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
+LATEST_CHECKPOINT_PATH = CHECKPOINT_DIR / "oceanpulse_latest.pt"
+RESUME_CHECKPOINT_PATH = CHECKPOINT_DIR / "oceanpulse_resume.pt"
+AUTOSAVE_EPOCH_INTERVAL = 10
 DEFAULT_EXTERNAL_ERA5_PATH = "~/OceanPulseData/ERA"
 RECOMMENDED_COPERNICUS_CURRENTS_DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_SALINITY_DATASET = "cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m"
@@ -98,17 +102,6 @@ REAL_DATA_APIS = [
         "url": "https://marine.copernicus.eu",
         "env_var": "COPERNICUS_MARINE_URL",
         "notes": DEFAULT_COPERNICUS_NOTES,
-    },
-    {
-        "id": "nasa_ocean_color",
-        "name": "NASA MODIS / Ocean Color",
-        "purpose": "Chlorophyll-a and optical indicators tied to biological uptake.",
-        "status": "planned",
-        "enabled": False,
-        "fields": ["chlorophyll_a", "ocean color"],
-        "url": "https://oceancolor.gsfc.nasa.gov",
-        "env_var": "NASA_OCEANCOLOR_URL",
-        "notes": "",
     },
     {
         "id": "global_fishing_watch",
@@ -306,7 +299,7 @@ class MLTrainerService:
         self._bootstrap_from_checkpoint()
 
     def _bootstrap_from_checkpoint(self):
-        checkpoint_path = CHECKPOINT_DIR / "oceanpulse_latest.pt"
+        checkpoint_path = LATEST_CHECKPOINT_PATH
         if not checkpoint_path.exists() or torch is None:
             return
         try:
@@ -332,9 +325,48 @@ class MLTrainerService:
             "detail": f"Loaded existing checkpoint from {checkpoint_path}.",
             "checkpoint_path": str(checkpoint_path),
         }
+        if RESUME_CHECKPOINT_PATH.exists():
+            self.state.metrics = {
+                **self.state.metrics,
+                "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH),
+                "resume_available": True,
+            }
 
     def list_required_apis(self):
         return [dict(item) for item in self.api_registry]
+
+    def _merge_training_config(self, config: dict | None = None) -> dict:
+        return {
+            "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 18))),
+            "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.05))),
+            "month_window": int((config or {}).get("month_window", self.state.config.get("month_window", 12))),
+            "resolution": str((config or {}).get("resolution", self.state.config.get("resolution", "2deg"))),
+            "quick_test": bool((config or {}).get("quick_test", False)),
+        }
+
+    def _initialize_training_state(self, merged_config: dict):
+        self.state = TrainingState(
+            status="running",
+            run_id=self.state.run_id + 1,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            progress=0.0,
+            current_epoch=0,
+            total_epochs=merged_config["epochs"],
+            config=merged_config,
+            model_summary=self.state.model_summary,
+            data_summary=self.state.data_summary,
+        )
+        write_training_manifest(
+            {
+                "status": "running",
+                "run_id": self.state.run_id,
+                "config": merged_config,
+                "current_epoch": 0,
+                "total_epochs": merged_config["epochs"],
+                "checkpoint_path": str(LATEST_CHECKPOINT_PATH) if LATEST_CHECKPOINT_PATH.exists() else None,
+                "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH) if RESUME_CHECKPOINT_PATH.exists() else None,
+            }
+        )
 
     def _config_by_id(self, connector_id: str):
         for item in self.api_registry:
@@ -385,7 +417,7 @@ class MLTrainerService:
             return self.state.snapshot()
 
     def expected_month_window(self) -> int:
-        checkpoint_path = CHECKPOINT_DIR / "oceanpulse_latest.pt"
+        checkpoint_path = LATEST_CHECKPOINT_PATH
         if checkpoint_path.exists() and torch is not None:
             try:
                 checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -399,9 +431,7 @@ class MLTrainerService:
             raise RealDataLoadError(
                 "PyTorch spatial inference dependencies are not installed. Run `pip install -r backend/requirements-ml-ingest.txt`."
             )
-        checkpoint_path = Path(
-            self.state.model_summary.get("checkpoint_path") or (CHECKPOINT_DIR / "oceanpulse_latest.pt")
-        )
+        checkpoint_path = Path(self.state.model_summary.get("checkpoint_path") or LATEST_CHECKPOINT_PATH)
         if not checkpoint_path.exists():
             raise RealDataLoadError(f"Checkpoint not found at {checkpoint_path}. Train the model first.")
         cache_key = (str(checkpoint_path), checkpoint_path.stat().st_mtime_ns)
@@ -418,6 +448,74 @@ class MLTrainerService:
         self._spatial_model_cache_key = cache_key
         return model, checkpoint
 
+    def _save_model_checkpoint(
+        self,
+        *,
+        model_state_dict: dict,
+        feature_names: list[str],
+        resolution: str,
+        month_window: int,
+        data_summary: dict,
+        epoch: int | None = None,
+    ) -> Path:
+        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "model_state_dict": model_state_dict,
+            "feature_names": feature_names,
+            "resolution": resolution,
+            "month_window": month_window,
+            "data_summary": data_summary,
+        }
+        if epoch is not None:
+            payload["epoch"] = int(epoch)
+        torch.save(payload, LATEST_CHECKPOINT_PATH)
+        return LATEST_CHECKPOINT_PATH
+
+    def _save_resume_checkpoint(
+        self,
+        *,
+        epoch: int,
+        total_epochs: int,
+        config: dict,
+        feature_names: list[str],
+        data_summary: dict,
+        model_state_dict: dict,
+        optimizer_state_dict: dict,
+        scheduler_state_dict: dict | None,
+        best_state_dict: dict | None,
+        best_val: float,
+        stagnant_epochs: int,
+        loss_history: list[float],
+    ) -> Path:
+        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "epoch": int(epoch),
+                "total_epochs": int(total_epochs),
+                "config": dict(config),
+                "feature_names": list(feature_names),
+                "data_summary": dict(data_summary),
+                "model_state_dict": model_state_dict,
+                "optimizer_state_dict": optimizer_state_dict,
+                "scheduler_state_dict": scheduler_state_dict,
+                "best_model_state_dict": best_state_dict,
+                "best_val": float(best_val),
+                "stagnant_epochs": int(stagnant_epochs),
+                "loss_history": list(loss_history),
+            },
+            RESUME_CHECKPOINT_PATH,
+        )
+        return RESUME_CHECKPOINT_PATH
+
+    def _load_resume_checkpoint(self):
+        if torch is None or not RESUME_CHECKPOINT_PATH.exists():
+            return None
+        try:
+            return torch.load(RESUME_CHECKPOINT_PATH, map_location="cpu")
+        except Exception:
+            logger.exception("ml_resume_checkpoint_load_failed path=%s", RESUME_CHECKPOINT_PATH)
+            return None
+
     def predict_spatial_sequence(self, feature_sequence: np.ndarray, atmospheric_co2: float) -> np.ndarray:
         model, _ = self._load_spatial_model()
         with torch.no_grad():
@@ -430,27 +528,21 @@ class MLTrainerService:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return self.state.snapshot(), False
-            merged_config = {
-                "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 18))),
-                "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.05))),
-                "month_window": int((config or {}).get("month_window", self.state.config.get("month_window", 12))),
-                "resolution": str((config or {}).get("resolution", self.state.config.get("resolution", "2deg"))),
-                "quick_test": bool((config or {}).get("quick_test", False)),
-            }
-            self.state = TrainingState(
-                status="running",
-                run_id=self.state.run_id + 1,
-                started_at=datetime.now(timezone.utc).isoformat(),
-                progress=0.0,
-                current_epoch=0,
-                total_epochs=merged_config["epochs"],
-                config=merged_config,
-                model_summary=self.state.model_summary,
-                data_summary=self.state.data_summary,
-            )
+            merged_config = self._merge_training_config(config)
+            self._initialize_training_state(merged_config)
             self._thread = threading.Thread(target=self._train_loop, args=(merged_config,), daemon=True)
             self._thread.start()
             return self.state.snapshot(), True
+
+    def run_training_job(self, config: dict | None = None):
+        merged_config = self._merge_training_config(config)
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("Cannot run a blocking training job while background training is already active.")
+            self._initialize_training_state(merged_config)
+        self._train_loop(merged_config)
+        with self._lock:
+            return self.state.snapshot()
 
     def _build_dataset(self, month_window: int, resolution: str, quick_test: bool = False):
         real_ready, connector_state = self._real_training_ready()
@@ -640,6 +732,25 @@ class MLTrainerService:
                 resolution=config["resolution"],
                 reference_now=self.repo.now,
             )
+            write_data_manifest(
+                {
+                    "config": config,
+                    "dataset": {
+                        "tabular_samples": int(len(X)),
+                        "target_samples": int(len(y)),
+                        **data_summary,
+                    },
+                    "tensor_build": {
+                        "tensor_dir": str(tensor_build.tensor_dir),
+                        "x_path": str(tensor_build.x_path),
+                        "y_path": str(tensor_build.y_path),
+                        "mask_path": str(tensor_build.mask_path),
+                        "atm_path": str(tensor_build.atm_path),
+                        "metadata_path": str(tensor_build.metadata_path),
+                        **tensor_build.summary,
+                    },
+                }
+            )
             with self._lock:
                 self.state.data_summary = {**data_summary, **tensor_build.summary}
                 self.state.metrics = {
@@ -666,14 +777,61 @@ class MLTrainerService:
             optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=1e-5)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(config["epochs"], 1))
 
+            resume_checkpoint = self._load_resume_checkpoint()
             best_val = float("inf")
             best_state = None
             patience = 6
             stagnant_epochs = 0
             epochs = config["epochs"]
             lr = config["learning_rate"]
+            start_epoch = 0
 
-            for epoch in range(epochs):
+            if resume_checkpoint:
+                resume_config = resume_checkpoint.get("config", {})
+                if (
+                    int(resume_config.get("month_window", config["month_window"])) == int(config["month_window"])
+                    and str(resume_config.get("resolution", config["resolution"])) == str(config["resolution"])
+                ):
+                    try:
+                        model.load_state_dict(resume_checkpoint["model_state_dict"])
+                        optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+                        scheduler_state = resume_checkpoint.get("scheduler_state_dict")
+                        if scheduler_state:
+                            scheduler.load_state_dict(scheduler_state)
+                        best_resume_state = resume_checkpoint.get("best_model_state_dict")
+                        if best_resume_state:
+                            best_state = best_resume_state
+                            self._save_model_checkpoint(
+                                model_state_dict=best_resume_state,
+                                feature_names=tensor_build.feature_names,
+                                resolution=config["resolution"],
+                                month_window=config["month_window"],
+                                data_summary={**data_summary, **tensor_build.summary},
+                                epoch=int(resume_checkpoint.get("epoch", 0)),
+                            )
+                        best_val = float(resume_checkpoint.get("best_val", best_val))
+                        stagnant_epochs = int(resume_checkpoint.get("stagnant_epochs", 0))
+                        start_epoch = min(int(resume_checkpoint.get("epoch", 0)), epochs)
+                        with self._lock:
+                            self.state.current_epoch = start_epoch
+                            self.state.progress = start_epoch / max(epochs, 1)
+                            self.state.loss_history = list(resume_checkpoint.get("loss_history", []))
+                            self.state.metrics = {
+                                **self.state.metrics,
+                                "stage": "resuming_training",
+                                "detail": f"Resuming from saved checkpoint at epoch {start_epoch} of {epochs}.",
+                                "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH),
+                            }
+                    except Exception:
+                        logger.exception("ml_resume_restore_failed path=%s", RESUME_CHECKPOINT_PATH)
+                        start_epoch = 0
+                else:
+                    logger.info(
+                        "ml_resume_checkpoint_ignored path=%s reason=config_mismatch",
+                        RESUME_CHECKPOINT_PATH,
+                    )
+
+            for epoch in range(start_epoch, epochs):
                 model.train()
                 train_losses: list[float] = []
                 for batch in train_loader:
@@ -737,6 +895,54 @@ class MLTrainerService:
                     self.state.data_summary = {**data_summary, **tensor_build.summary}
                 time.sleep(0.05)
 
+                completed_epoch = epoch + 1
+                if completed_epoch % AUTOSAVE_EPOCH_INTERVAL == 0:
+                    current_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
+                    latest_best_state = best_state or current_state
+                    self._save_model_checkpoint(
+                        model_state_dict=latest_best_state,
+                        feature_names=tensor_build.feature_names,
+                        resolution=config["resolution"],
+                        month_window=config["month_window"],
+                        data_summary={**data_summary, **tensor_build.summary},
+                        epoch=completed_epoch,
+                    )
+                    self._save_resume_checkpoint(
+                        epoch=completed_epoch,
+                        total_epochs=epochs,
+                        config=config,
+                        feature_names=tensor_build.feature_names,
+                        data_summary={**data_summary, **tensor_build.summary},
+                        model_state_dict=current_state,
+                        optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict(),
+                        best_state_dict=latest_best_state,
+                        best_val=best_val,
+                        stagnant_epochs=stagnant_epochs,
+                        loss_history=self.state.loss_history,
+                    )
+                    with self._lock:
+                        self.state.metrics = {
+                            **self.state.metrics,
+                            "checkpoint_path": str(LATEST_CHECKPOINT_PATH),
+                            "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH),
+                            "last_autosave_epoch": completed_epoch,
+                            "detail": f"Epoch {completed_epoch} of {epochs}. Autosaved resumable checkpoint.",
+                        }
+                    write_training_manifest(
+                        {
+                            "status": "running",
+                            "run_id": self.state.run_id,
+                            "config": config,
+                            "current_epoch": completed_epoch,
+                            "total_epochs": epochs,
+                            "checkpoint_path": str(LATEST_CHECKPOINT_PATH),
+                            "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH),
+                            "data_summary": {**data_summary, **tensor_build.summary},
+                            "metrics": dict(self.state.metrics),
+                        }
+                    )
+
                 if stagnant_epochs >= patience:
                     logger.info("ml_training_early_stopping run_id=%s epoch=%s", self.state.run_id, epoch + 1)
                     break
@@ -744,18 +950,16 @@ class MLTrainerService:
             if best_state is None:
                 raise RuntimeError("Training finished without producing a valid checkpoint state.")
 
-            CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = CHECKPOINT_DIR / "oceanpulse_latest.pt"
-            torch.save(
-                {
-                    "model_state_dict": best_state,
-                    "feature_names": tensor_build.feature_names,
-                    "resolution": config["resolution"],
-                    "month_window": config["month_window"],
-                    "data_summary": {**data_summary, **tensor_build.summary},
-                },
-                checkpoint_path,
+            checkpoint_path = self._save_model_checkpoint(
+                model_state_dict=best_state,
+                feature_names=tensor_build.feature_names,
+                resolution=config["resolution"],
+                month_window=config["month_window"],
+                data_summary={**data_summary, **tensor_build.summary},
+                epoch=self.state.current_epoch,
             )
+            if RESUME_CHECKPOINT_PATH.exists():
+                RESUME_CHECKPOINT_PATH.unlink()
 
             # Keep a lightweight tabular surrogate for any non-gridded scoring hooks.
             feature_mean = X.mean(axis=0, keepdims=True)
@@ -795,6 +999,20 @@ class MLTrainerService:
                 }
                 self.state.data_summary = {**data_summary, **tensor_build.summary}
                 self.state.error = None
+            write_training_manifest(
+                {
+                    "status": "completed",
+                    "run_id": self.state.run_id,
+                    "config": config,
+                    "current_epoch": self.state.current_epoch,
+                    "total_epochs": epochs,
+                    "checkpoint_path": str(checkpoint_path),
+                    "resume_checkpoint_path": None,
+                    "data_summary": {**data_summary, **tensor_build.summary},
+                    "model_summary": dict(self.state.model_summary),
+                    "metrics": dict(self.state.metrics),
+                }
+            )
             logger.info("ml_training_completed run_id=%s metrics=%s", self.state.run_id, self.state.metrics)
         except Exception as exc:
             logger.exception("ml_training_failed run_id=%s", self.state.run_id)
@@ -802,6 +1020,20 @@ class MLTrainerService:
                 self.state.status = "failed"
                 self.state.finished_at = datetime.now(timezone.utc).isoformat()
                 self.state.error = str(exc)
+            write_training_manifest(
+                {
+                    "status": "failed",
+                    "run_id": self.state.run_id,
+                    "config": config,
+                    "current_epoch": self.state.current_epoch,
+                    "total_epochs": self.state.total_epochs,
+                    "checkpoint_path": self.state.model_summary.get("checkpoint_path"),
+                    "resume_checkpoint_path": str(RESUME_CHECKPOINT_PATH) if RESUME_CHECKPOINT_PATH.exists() else None,
+                    "data_summary": dict(self.state.data_summary),
+                    "metrics": dict(self.state.metrics),
+                    "error": str(exc),
+                }
+            )
 
 
 class _MonthlyTensorDataset(Dataset):
