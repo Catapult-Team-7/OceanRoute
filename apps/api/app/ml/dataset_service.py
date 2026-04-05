@@ -149,6 +149,20 @@ def _feature_stats(x_tensor: np.ndarray) -> dict[str, dict[str, float]]:
     return stats
 
 
+def _json_safe(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _region_ids_from_request(request: DatasetExportRequest) -> list[str]:
     if request.region_ids:
         return request.region_ids
@@ -539,7 +553,7 @@ def inspect_dataset(dataset_id: str, db: Session) -> dict[str, object]:
     split_preview = read_table_rows(row.splits_path)[:5] if row.splits_path else []
     return {
         "dataset": _to_dataset_artifact(row).model_dump(mode="json"),
-        "metadata": metadata_payload,
-        "sample_index_preview": manifest_preview,
-        "split_preview": split_preview,
+        "metadata": _json_safe(metadata_payload),
+        "sample_index_preview": _json_safe(manifest_preview),
+        "split_preview": _json_safe(split_preview),
     }

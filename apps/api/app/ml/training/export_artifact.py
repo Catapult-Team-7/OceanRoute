@@ -13,6 +13,26 @@ except Exception:  # pragma: no cover
     torch = None
 
 
+def _export_torch_model(model, model_path: Path, feature_schema: dict[str, Any]) -> str | None:
+    if model is None or torch is None:
+        return None
+    model.eval()
+    try:
+        scripted = torch.jit.script(model)
+        scripted.save(str(model_path))
+        return "script"
+    except Exception:
+        tensor_shapes = feature_schema.get("tensor_shapes", {})
+        x_shape = tensor_shapes.get("X")
+        if not isinstance(x_shape, list) or len(x_shape) != 5:
+            raise
+        _, time_steps, channels, height, width = [int(value) for value in x_shape]
+        example_input = torch.zeros((1, time_steps, channels, height, width), dtype=torch.float32)
+        traced = torch.jit.trace(model, example_input)
+        traced.save(str(model_path))
+        return "trace"
+
+
 def export_model_artifact(
     *,
     model,
@@ -49,9 +69,7 @@ def export_model_artifact(
         shutil.copyfile(best_checkpoint_path, checkpoint_copy)
 
     model_path = artifact_dir / "model.ts"
-    if model is not None and torch is not None:
-        scripted = torch.jit.script(model)
-        scripted.save(str(model_path))
+    export_format = _export_torch_model(model, model_path, feature_schema)
 
     metadata = {
         "model_id": model_id,
@@ -76,6 +94,7 @@ def export_model_artifact(
         },
         "promotion_status": "candidate",
         "framework": framework,
+        "export_format": export_format,
     }
     metadata_path = artifact_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")

@@ -24,6 +24,14 @@ apps/api/tests/test-data-debug*/
 apps/api/tests/tmp_debug.db
 apps/api/tests/test_oceanroute_debug*.db
 apps/api/tests/test_oceanroute.db
+data/data_lake/manifests/baseline/
+data/data_lake/baselines/
+data/data_lake/datasets/
+data/data_lake/features/
+data/data_lake/indexes/
+data/data_lake/predictions/
+data/model_registry/
+data/training_runs/
 *.db
 *.sqlite3
 alembic/__pycache__

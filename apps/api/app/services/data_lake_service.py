@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,11 @@ def _write_tensor(path: Path, array: np.ndarray) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     if ZARR_AVAILABLE:
         store_path = path.with_suffix(".zarr")
+        if store_path.exists():
+            if store_path.is_dir():
+                shutil.rmtree(store_path)
+            else:
+                store_path.unlink()
         zarr.save(str(store_path), array)
         return str(store_path)
     np.save(path.with_suffix(".npy"), array)
@@ -66,15 +72,30 @@ def _write_tensor(path: Path, array: np.ndarray) -> str:
 
 
 def read_tensor(uri: str) -> np.ndarray:
+    def _legacy_group_fallback(group_path: Path, array_name: str) -> np.ndarray | None:
+        candidates = [
+            group_path / f"{array_name}.npy",
+            group_path.parent / f"{array_name}.npy",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return np.load(candidate)
+        return None
+
     if "::" in uri:
         group_uri, array_name = uri.split("::", maxsplit=1)
         group_path = Path(group_uri)
         if ZARR_AVAILABLE and group_path.suffix == ".zarr":
-            group = zarr.open_group(str(group_path), mode="r")
-            return np.asarray(group[array_name], dtype=np.float32)
-        fallback_path = group_path / f"{array_name}.npy"
-        if fallback_path.exists():
-            return np.load(fallback_path)
+            try:
+                group = zarr.open_group(str(group_path), mode="r")
+                return np.asarray(group[array_name], dtype=np.float32)
+            except Exception:
+                legacy = _legacy_group_fallback(group_path, array_name)
+                if legacy is not None:
+                    return legacy
+        legacy = _legacy_group_fallback(group_path, array_name)
+        if legacy is not None:
+            return legacy
         raise ValueError(f"Unsupported tensor-group artifact URI: {uri}")
     path = Path(uri)
     if path.suffix == ".zarr" and ZARR_AVAILABLE:
@@ -100,9 +121,14 @@ def _write_table(path: Path, rows: list[dict[str, Any]]) -> str:
 def _write_tensor_group(path: Path, arrays: dict[str, np.ndarray]) -> tuple[str, dict[str, str]]:
     path.parent.mkdir(parents=True, exist_ok=True)
     if ZARR_AVAILABLE:
+        if path.exists():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
         group = zarr.open_group(str(path), mode="w")
         for name, array in arrays.items():
-            group.create_dataset(name, data=array, overwrite=True)
+            group.create_array(name, data=np.asarray(array, dtype=np.float32), overwrite=True)
         return str(path), {name: f"{path}::{name}" for name in arrays}
 
     path.mkdir(parents=True, exist_ok=True)
