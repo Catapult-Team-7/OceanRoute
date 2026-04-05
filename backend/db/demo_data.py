@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from ingest.real_training_data import RealDataLoadError
 from pipeline.artifacts import load_best_published_map_bundle
 from .models import AnomalyRecord, ForecastPoint, ForecastResponse, FluxPoint
-from .real_products import build_real_grid_bundle, build_real_point_bundle
+from .real_products import build_provisional_real_grid_bundle, build_real_grid_bundle, build_real_point_bundle
 from ml.trainer import MLTrainerService
 
 
@@ -76,21 +76,41 @@ class DemoOceanRepository:
             self.last_real_anomalies = real_bundle.anomalies
             return real_bundle.rows
         except RealDataLoadError as exc:
-            self.last_grid_metadata = {
-                "verified_map": False,
-                "trained_model_ready": bool(self.trainer.state.model_ready),
-                "inference_mode": self.trainer.state.model_summary.get("mode", "real_monthly_convlstm"),
-                "map_source": "real_grid_unavailable",
-                "source_summary": (
-                    "No verified CO2 ocean layers are available because the checkpoint-backed map build failed: "
-                    f"{exc}"
-                ),
-            }
-            self.last_real_anomalies = []
-            return []
+            try:
+                provisional_bundle = build_provisional_real_grid_bundle(
+                    date=date,
+                    resolution=resolution,
+                    region=region,
+                    trainer=self.trainer,
+                    noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+                    era_directory=str(era_config.get("notes", "")).strip(),
+                    copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
+                    if "path=" in str(copernicus_config.get("notes", ""))
+                    else str(copernicus_config.get("notes", "")).strip(),
+                    reference_now=self.now,
+                )
+                provisional_bundle.metadata["source_summary"] = (
+                    f"{provisional_bundle.metadata.get('source_summary', '')} Verified publish is still blocked: {exc}"
+                ).strip()
+                self.last_grid_metadata = provisional_bundle.metadata
+                self.last_real_anomalies = provisional_bundle.anomalies
+                return provisional_bundle.rows
+            except RealDataLoadError:
+                self.last_grid_metadata = {
+                    "verified_map": False,
+                    "trained_model_ready": bool(self.trainer.state.model_ready),
+                    "inference_mode": self.trainer.state.model_summary.get("mode", "real_monthly_convlstm"),
+                    "map_source": "real_grid_unavailable",
+                    "source_summary": (
+                        "No verified CO2 ocean layers are available because the checkpoint-backed map build failed: "
+                        f"{exc}"
+                    ),
+                }
+                self.last_real_anomalies = []
+                return []
 
     def get_recent_anomalies(self, threshold: float, limit: int, date: str | None = None) -> list[AnomalyRecord]:
-        if self.last_grid_metadata.get("verified_map") and self.last_real_anomalies:
+        if self.last_real_anomalies:
             anomalies = [a for a in self.last_real_anomalies if a.anomaly_score >= threshold]
             return anomalies[:limit]
         return []

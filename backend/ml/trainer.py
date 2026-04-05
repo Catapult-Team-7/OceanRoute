@@ -780,11 +780,13 @@ class MLTrainerService:
             resume_checkpoint = self._load_resume_checkpoint()
             best_val = float("inf")
             best_state = None
-            patience = 6
-            stagnant_epochs = 0
             epochs = config["epochs"]
+            patience = max(epochs + 1, 12)
+            stagnant_epochs = 0
             lr = config["learning_rate"]
             start_epoch = 0
+            best_mae = float("nan")
+            best_r2 = float("nan")
 
             if resume_checkpoint:
                 resume_config = resume_checkpoint.get("config", {})
@@ -852,6 +854,8 @@ class MLTrainerService:
                 model.eval()
                 val_losses: list[float] = []
                 mae_values: list[float] = []
+                val_predictions: list[np.ndarray] = []
+                val_targets: list[np.ndarray] = []
                 with torch.no_grad():
                     for batch in val_loader:
                         features = batch["x"].to(device)
@@ -863,16 +867,30 @@ class MLTrainerService:
                         val_losses.append(float(val_loss.item()))
                         abs_error = torch.abs((predictions - targets) * mask).sum() / torch.clamp(mask.sum(), min=1.0)
                         mae_values.append(float(abs_error.item()))
+                        valid = mask > 0
+                        if torch.any(valid):
+                            val_predictions.append(predictions[valid].detach().cpu().numpy())
+                            val_targets.append(targets[valid].detach().cpu().numpy())
 
                 train_loss = float(np.mean(train_losses)) if train_losses else float("nan")
                 val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
                 mae = float(np.mean(mae_values)) if mae_values else float("nan")
+                if val_predictions and val_targets:
+                    y_pred = np.concatenate(val_predictions)
+                    y_true = np.concatenate(val_targets)
+                    ss_res = float(np.sum((y_pred - y_true) ** 2))
+                    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+                    val_r2 = 1 - ss_res / ss_tot if ss_tot else float("nan")
+                else:
+                    val_r2 = float("nan")
                 scheduler.step()
 
                 if val_loss < best_val:
                     best_val = val_loss
                     stagnant_epochs = 0
                     best_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
+                    best_mae = mae
+                    best_r2 = val_r2
                 else:
                     stagnant_epochs += 1
 
@@ -886,6 +904,7 @@ class MLTrainerService:
                         "train_loss": round(train_loss, 5),
                         "val_loss": round(val_loss, 5),
                         "mae": round(mae, 5),
+                        "r2": round(val_r2, 5) if np.isfinite(val_r2) else None,
                         "samples": int(len(dataset)),
                         "train_samples": int(len(train_dataset)),
                         "val_samples": int(len(val_dataset)),
@@ -970,10 +989,10 @@ class MLTrainerService:
             bias = float(np.mean(y - (Xn @ weights)))
             val_target = y[max(1, int(len(y) * 0.8)) :]
             val_pred = (Xn[max(1, int(len(y) * 0.8)) :] @ weights) + bias
-            mae = float(np.mean(np.abs(val_pred - val_target))) if len(val_target) else 0.0
+            surrogate_mae = float(np.mean(np.abs(val_pred - val_target))) if len(val_target) else 0.0
             ss_res = float(np.sum((val_pred - val_target) ** 2)) if len(val_target) else 0.0
             ss_tot = float(np.sum((val_target - val_target.mean()) ** 2)) if len(val_target) else 0.0
-            r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
+            surrogate_r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
 
             with self._lock:
                 self.weights = weights
@@ -987,8 +1006,10 @@ class MLTrainerService:
                     **self.state.metrics,
                     "stage": "completed",
                     "detail": "Training completed and checkpoint saved.",
-                    "mae": round(mae, 5),
-                    "r2": round(r2, 5),
+                    "mae": round(best_mae, 5) if np.isfinite(best_mae) else None,
+                    "r2": round(best_r2, 5) if np.isfinite(best_r2) else None,
+                    "surrogate_mae": round(surrogate_mae, 5),
+                    "surrogate_r2": round(surrogate_r2, 5),
                     "checkpoint_path": str(checkpoint_path),
                 }
                 self.state.model_summary = {

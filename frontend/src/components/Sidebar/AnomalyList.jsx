@@ -8,6 +8,7 @@ export default function AnomalyList() {
   const setSelectedPoint = useOceanStore((state) => state.setSelectedPoint);
   const heatmapData = useOceanStore((state) => state.heatmapData);
   const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
+  const sourceSummary = heatmapData?.metadata?.source_summary || "";
 
   return (
     <section className="sidebar-section">
@@ -22,7 +23,10 @@ export default function AnomalyList() {
         <span>{anomalies.length}</span>
       </div>
       {!verifiedMap ? (
-        <p className="subtle">These alerts are provisional until the verified gridded map is published.</p>
+        <p className="subtle">
+          These alerts are provisional model outputs until the verified gridded map is published.
+          {sourceSummary ? ` ${sourceSummary}` : ""}
+        </p>
       ) : null}
       <div className="list-stack">
         {anomalies.length ? anomalies.map((anomaly) => (

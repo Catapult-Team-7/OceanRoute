@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import torch
 
 from ingest.compute_flux import compute_co2_flux
 from ingest.fetch_copernicus import default_copernicus_directory
@@ -150,6 +151,22 @@ def _scalar_month_value(frame: pd.DataFrame, year: int, month: int, column: str,
     return float(values.iloc[0])
 
 
+def _latest_scalar_value(frame: pd.DataFrame, year: int, month: int, column: str, default: float = 0.0) -> float:
+    subset = frame[frame["year"].notna() & frame["month"].notna()].copy()
+    if subset.empty or column not in subset.columns:
+        return default
+    subset["year"] = subset["year"].astype(int)
+    subset["month"] = subset["month"].astype(int)
+    eligible = subset[(subset["year"] < year) | ((subset["year"] == year) & (subset["month"] <= month))]
+    if eligible.empty:
+        eligible = subset
+    eligible = eligible.sort_values(["year", "month"])
+    values = eligible[column].dropna()
+    if values.empty:
+        return default
+    return float(values.iloc[-1])
+
+
 def _aggregate_copernicus_to_resolution(copernicus_monthly: pd.DataFrame, resolution: str) -> pd.DataFrame:
     step = _resolution_step(resolution)
     aggregated = copernicus_monthly.copy()
@@ -266,6 +283,155 @@ def _load_monthly_drivers(noaa_gml_url: str, era_directory: str | Path | None, c
     copernicus_monthly = load_copernicus_monthly(copernicus_directory or default_copernicus_directory())
     copernicus_monthly = _aggregate_copernicus_to_resolution(copernicus_monthly, resolution)
     return atmospheric, era_monthly, copernicus_monthly
+
+
+def build_provisional_real_grid_bundle(
+    *,
+    date: str | None,
+    resolution: str,
+    region: str,
+    trainer: "MLTrainerService",
+    noaa_gml_url: str,
+    era_directory: str | Path | None,
+    copernicus_directory: str | Path | None,
+    reference_now: datetime,
+) -> RealGridBundle:
+    model, _ = trainer._load_spatial_model()
+    atmospheric, era_monthly, copernicus_monthly = _load_monthly_drivers(
+        noaa_gml_url=noaa_gml_url,
+        era_directory=era_directory,
+        copernicus_directory=copernicus_directory,
+        resolution=resolution,
+    )
+    if copernicus_monthly.empty:
+        raise RealDataLoadError("No Copernicus monthly grids are available for provisional checkpoint-backed inference.")
+
+    available_months = sorted({(int(row.year), int(row.month)) for row in copernicus_monthly.itertuples(index=False)})
+    requested = _month_from_string(date)
+    target_month = _resolve_target_month(available_months, requested)
+    lat_values, lon_values = _grid_values(resolution)
+    lat_index = {round(float(lat), 6): idx for idx, lat in enumerate(lat_values)}
+    lon_index = {round(float(lon), 6): idx for idx, lon in enumerate(lon_values)}
+    target_rows = copernicus_monthly[
+        (copernicus_monthly["year"] == target_month[0]) & (copernicus_monthly["month"] == target_month[1])
+    ]
+    if target_rows.empty:
+        raise RealDataLoadError(
+            f"No Copernicus monthly grid rows are available for provisional inference at {target_month[0]}-{target_month[1]:02d}."
+        )
+
+    thetao_default = _latest_scalar_value(copernicus_monthly, target_month[0], target_month[1], "copernicus_thetao", default=0.0)
+    salinity_default = _latest_scalar_value(copernicus_monthly, target_month[0], target_month[1], "copernicus_salinity", default=0.0)
+    u_default = _latest_scalar_value(copernicus_monthly, target_month[0], target_month[1], "copernicus_u", default=0.0)
+    v_default = _latest_scalar_value(copernicus_monthly, target_month[0], target_month[1], "copernicus_v", default=0.0)
+    sea_level_default = _latest_scalar_value(copernicus_monthly, target_month[0], target_month[1], "copernicus_zos", default=0.0)
+    wind_default = _latest_scalar_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
+    atm_default = _latest_scalar_value(atmospheric, target_month[0], target_month[1], "pco2_atm", default=0.0)
+    angle = 2 * np.pi * target_month[1] / 12.0
+
+    feature_grid = np.zeros((9, len(lat_values), len(lon_values)), dtype=np.float32)
+    feature_grid[0, :, :] = thetao_default / 30.0
+    feature_grid[1, :, :] = salinity_default / 40.0
+    feature_grid[2, :, :] = u_default / 3.0
+    feature_grid[3, :, :] = v_default / 3.0
+    feature_grid[4, :, :] = wind_default / 20.0
+    feature_grid[5, :, :] = sea_level_default / 2.0
+    feature_grid[6, :, :] = atm_default / 500.0
+    feature_grid[7, :, :] = np.sin(angle)
+    feature_grid[8, :, :] = np.cos(angle)
+
+    for row in target_rows.itertuples(index=False):
+        lat_key = round(float(row.lat_bin), 6)
+        lon_key = round(float(row.lon_bin), 6)
+        if lat_key not in lat_index or lon_key not in lon_index:
+            continue
+        i = lat_index[lat_key]
+        j = lon_index[lon_key]
+        if hasattr(row, "copernicus_thetao") and not np.isnan(getattr(row, "copernicus_thetao", np.nan)):
+            feature_grid[0, i, j] = float(row.copernicus_thetao) / 30.0
+        if hasattr(row, "copernicus_salinity") and not np.isnan(getattr(row, "copernicus_salinity", np.nan)):
+            feature_grid[1, i, j] = float(row.copernicus_salinity) / 40.0
+        if hasattr(row, "copernicus_u") and not np.isnan(getattr(row, "copernicus_u", np.nan)):
+            feature_grid[2, i, j] = float(row.copernicus_u) / 3.0
+        if hasattr(row, "copernicus_v") and not np.isnan(getattr(row, "copernicus_v", np.nan)):
+            feature_grid[3, i, j] = float(row.copernicus_v) / 3.0
+        if hasattr(row, "copernicus_zos") and not np.isnan(getattr(row, "copernicus_zos", np.nan)):
+            feature_grid[5, i, j] = float(row.copernicus_zos) / 2.0
+
+    with torch.no_grad():
+        x_tensor = torch.tensor(feature_grid[None, ...], dtype=torch.float32)
+        atm_tensor = torch.tensor([[atm_default]], dtype=torch.float32)
+        predicted_grid = model(x_tensor, atm_tensor)[0, 0].detach().cpu().numpy()
+
+    predicted_mean = float(np.nanmean(predicted_grid))
+    predicted_std = float(np.nanstd(predicted_grid))
+    deviation_scale = max(predicted_std, 0.2)
+    rows: list[FluxPoint] = []
+    anomalies: list[AnomalyRecord] = []
+    for i, lat in enumerate(lat_values):
+        for j, lon in enumerate(lon_values):
+            if not _in_region(float(lat), float(lon), region):
+                continue
+            predicted_flux = float(predicted_grid[i, j])
+            model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
+            current_u = float(feature_grid[2, i, j] * 3.0)
+            current_v = float(feature_grid[3, i, j] * 3.0)
+            current_speed = math.sqrt((current_u**2) + (current_v**2))
+            weakening = model_deviation * 0.35
+            route_priority = max(0.0, model_deviation * 0.9 + current_speed * 0.45 + (wind_default / 24.0))
+            anomaly_score = min(1.0, model_deviation * 0.45 + current_speed * 0.05)
+            rows.append(
+                FluxPoint(
+                    lat=float(lat),
+                    lon=float(lon),
+                    co2_flux=round(predicted_flux, 4),
+                    sst=round(float(feature_grid[0, i, j] * 30.0), 2),
+                    salinity=round(float(feature_grid[1, i, j] * 40.0), 2),
+                    wind_speed=round(float(feature_grid[4, i, j] * 20.0), 2),
+                    chl_a=0.0,
+                    anomaly_score=round(anomaly_score, 4),
+                    observed_flux=round(predicted_flux, 4),
+                    predicted_flux=round(predicted_flux, 4),
+                    weakening_score=round(weakening, 4),
+                    route_priority=round(min(route_priority, 5.0), 4),
+                    timestamp=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
+                    source="MODEL",
+                )
+            )
+            if anomaly_score >= 0.35 and len(anomalies) < 24:
+                anomalies.append(
+                    AnomalyRecord(
+                        id=f"provisional-{target_month[0]}-{target_month[1]}-{i}-{j}",
+                        lat=float(lat),
+                        lon=float(lon),
+                        region_name=f"Cell {float(lat):.1f}, {float(lon):.1f}",
+                        anomaly_score=round(anomaly_score, 4),
+                        deviation_pct=round(model_deviation * 100.0, 1),
+                        detected_at=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
+                        severity="critical" if anomaly_score >= 0.8 else "high" if anomaly_score >= 0.55 else "medium",
+                    )
+                )
+
+    mean_flux = sum(row.co2_flux for row in rows) / max(len(rows), 1)
+    sink_area_pct = sum(1 for row in rows if row.co2_flux < 0) / max(len(rows), 1) * 100
+    metadata = {
+        "date": f"{target_month[0]}-{target_month[1]:02d}",
+        "units": "mol CO2/m²/yr",
+        "mean_flux": round(mean_flux, 3),
+        "sink_area_pct": round(sink_area_pct, 1),
+        "inference_mode": "checkpoint_backed_provisional_inference",
+        "trained_model_ready": True,
+        "verified_map": False,
+        "map_source": "checkpoint_provisional_grid",
+        "source_summary": (
+            "Checkpoint-backed provisional grid built from the latest available Copernicus monthly fields with NOAA and ERA5 scalar forcing fallback. "
+            "These outputs are real model predictions, but not yet a fully verified published grid."
+        ),
+        "trained_month_window": int(trainer.expected_month_window()),
+        "effective_inference_month_window": 1,
+        "observed_support_cells": 0,
+    }
+    return RealGridBundle(rows=rows, metadata=metadata, anomalies=anomalies)
 
 
 def build_real_grid_bundle(
