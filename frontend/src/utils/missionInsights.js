@@ -13,10 +13,10 @@ function distanceDeg(latA, lonA, latB, lonB) {
 }
 
 function clusterDistanceForZoom(zoom) {
-  if (zoom < 1.4) return 10;
-  if (zoom < 2.1) return 6;
-  if (zoom < 3) return 3.5;
-  return 2;
+  if (zoom < 1.4) return 5;
+  if (zoom < 2.1) return 3.5;
+  if (zoom < 3) return 2.4;
+  return 1.6;
 }
 
 function clusterWindowForZoom(zoom) {
@@ -68,6 +68,8 @@ export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
       weightSum: 0,
       latSum: 0,
       lonSum: 0,
+      anchorPoint: point,
+      anchorScore: -Infinity,
       maxWeakening: 0,
       maxRoutePriority: 0,
       maxAnomalyScore: 0,
@@ -81,13 +83,26 @@ export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
     current.maxRoutePriority = Math.max(current.maxRoutePriority, point.properties.route_priority || 0);
     current.maxAnomalyScore = Math.max(current.maxAnomalyScore, point.properties.anomaly_score || 0);
     current.meanFluxAccumulator += point.properties.predicted_flux || point.properties.flux || 0;
+    const anchorScore =
+      (point.properties.route_priority || 0) * 1.2 +
+      (point.properties.weakening_score || 0) * 1.5 +
+      (point.properties.anomaly_score || 0) * 1.1 +
+      Math.abs(point.properties.display_flux ?? point.properties.predicted_flux ?? point.properties.flux ?? 0) * 0.4;
+    if (anchorScore >= current.anchorScore) {
+      current.anchorPoint = point;
+      current.anchorScore = anchorScore;
+    }
     groups.set(key, current);
   }
 
   return Array.from(groups.values())
     .map((group, index) => {
-      const lat = group.latSum / Math.max(group.weightSum, 0.001);
-      const lon = normalizeLon(group.lonSum / Math.max(group.weightSum, 0.001));
+      const anchorCoordinates = group.anchorPoint?.geometry?.coordinates || [
+        group.lonSum / Math.max(group.weightSum, 0.001),
+        group.latSum / Math.max(group.weightSum, 0.001),
+      ];
+      const lon = normalizeLon(anchorCoordinates[0]);
+      const lat = anchorCoordinates[1];
       const clusterSize = group.points.length;
       return {
         id: `recovery-target-${index}`,
@@ -128,16 +143,20 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
         (cluster) => distanceDeg(item.lat, item.lon, cluster.lat, cluster.lon) <= clusterDistance
       );
       if (existing) {
-        const previousWeight = existing.weight;
-        const nextWeight = previousWeight + weight;
-        existing.lat = (existing.lat * previousWeight + item.lat * weight) / nextWeight;
-        existing.lon = normalizeLon((existing.lon * previousWeight + item.lon * weight) / nextWeight);
-        existing.weight = nextWeight;
+        existing.weight += weight;
         existing.clusterSize += item.metadata?.source_count || 1;
         existing.intensity = Math.max(existing.intensity, item.intensity || 0);
         existing.routePriority = Math.max(existing.routePriority, item.metadata?.route_priority || item.intensity || 0);
         existing.weakening = Math.max(existing.weakening, item.metadata?.weakening_score || item.weakening || 0);
         existing.anomalyScore = Math.max(existing.anomalyScore, item.metadata?.anomaly_score || item.anomalyScore || 0);
+        if ((item.intensity || 0) >= (existing.anchorIntensity || 0)) {
+          existing.lat = item.lat;
+          existing.lon = normalizeLon(item.lon);
+          existing.anchorIntensity = item.intensity || 0;
+          existing.label = item.label || existing.label;
+          existing.source = item.source || existing.source;
+          existing.metadata = item.metadata || existing.metadata;
+        }
         if (!existing.routeTarget && item.nearest_port) {
           existing.routeTarget = {
             name: item.nearest_port.name,
@@ -157,6 +176,7 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
           routePriority: item.metadata?.route_priority || item.intensity || 0,
           weakening: item.metadata?.weakening_score || item.weakening || 0,
           anomalyScore: item.metadata?.anomaly_score || item.anomalyScore || 0,
+          anchorIntensity: item.intensity || 0,
           routeTarget: item.nearest_port
             ? {
                 name: item.nearest_port.name,
@@ -189,7 +209,8 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
         source: cluster.source,
         metadata: cluster.metadata,
       }))
-      .sort((a, b) => (b.routePriority || b.intensity || 0) - (a.routePriority || a.intensity || 0));
+      .sort((a, b) => (b.routePriority || b.intensity || 0) - (a.routePriority || a.intensity || 0))
+      .slice(0, 36);
   }
 
   const clusterStep = clusterWindowForZoom(zoom);

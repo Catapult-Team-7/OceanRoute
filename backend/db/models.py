@@ -17,6 +17,8 @@ class FluxPoint(BaseModel):
     anomaly_score: float = 0.0
     observed_flux: float | None = None
     predicted_flux: float | None = None
+    display_flux: float | None = None
+    display_signal: float | None = None
     weakening_score: float | None = None
     route_priority: float | None = None
     timestamp: datetime
@@ -97,6 +99,8 @@ class FeatureProperties(BaseModel):
     flux: float
     observed_flux: float | None = None
     predicted_flux: float
+    display_flux: float | None = None
+    display_signal: float | None = None
     sst: float
     current_u: float | None = None
     current_v: float | None = None

@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 
 from db.crud import get_forecast
 from db.database import get_repo
@@ -19,6 +20,6 @@ async def forecast(
     repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
 ):
     try:
-        return await get_forecast(repo, lat=lat, lon=lon, horizon=horizon)
+        return await run_in_threadpool(repo.get_point_forecast, lat, lon, horizon)
     except RealDataLoadError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from db.demo_data import DemoOceanRepository
-from db.real_products import build_real_grid_bundle
+from db.real_products import build_provisional_real_grid_bundle, build_real_grid_bundle
 from ingest.fetch_copernicus import default_copernicus_directory, parse_copernicus_notes
 from ml.preprocess import build_monthly_training_tensors
 
@@ -79,17 +79,32 @@ def publish_verified_map(
     era_config = trainer._config_by_id("era5") or {}
     copernicus_config = trainer._config_by_id("copernicus_marine") or {}
 
-    bundle = build_real_grid_bundle(
-        date=date,
-        resolution=resolution,
-        region=region,
-        trainer=trainer,
-        socat_url=str(socat_config.get("url", "")).strip(),
-        noaa_gml_url=str(noaa_config.get("url", "")).strip(),
-        era_directory=str(era_config.get("notes", "")).strip(),
-        copernicus_directory=_resolve_copernicus_training_directory(str(copernicus_config.get("notes", ""))),
-        reference_now=repo.now,
-    )
+    try:
+        bundle = build_provisional_real_grid_bundle(
+            date=date,
+            resolution=resolution,
+            region=region,
+            trainer=trainer,
+            noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+            era_directory=str(era_config.get("notes", "")).strip(),
+            copernicus_directory=_resolve_copernicus_training_directory(str(copernicus_config.get("notes", ""))),
+            reference_now=repo.now,
+        )
+        bundle.metadata["source_summary"] = (
+            f"{bundle.metadata.get('source_summary', '')} Published via fast checkpoint-backed real-data mode."
+        ).strip()
+    except Exception:
+        bundle = build_real_grid_bundle(
+            date=date,
+            resolution=resolution,
+            region=region,
+            trainer=trainer,
+            socat_url=str(socat_config.get("url", "")).strip(),
+            noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+            era_directory=str(era_config.get("notes", "")).strip(),
+            copernicus_directory=_resolve_copernicus_training_directory(str(copernicus_config.get("notes", ""))),
+            reference_now=repo.now,
+        )
     payload = {
         "metadata": bundle.metadata,
         "rows": [row.model_dump(mode="json") for row in bundle.rows],
@@ -104,4 +119,3 @@ def publish_verified_map(
         "row_count": len(bundle.rows),
         "anomaly_count": len(bundle.anomalies),
     }
-

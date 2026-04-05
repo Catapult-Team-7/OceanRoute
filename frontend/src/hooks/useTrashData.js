@@ -24,7 +24,7 @@ export function useTrashData() {
         });
         const data = await fetchJson(`${API_BASE}/api/trash?${params.toString()}`, {
           signal: controller.signal,
-          timeoutMs: 9000,
+          timeoutMs: 45000,
         });
         if (!cancelled) setTrashData(data);
       } catch (error) {

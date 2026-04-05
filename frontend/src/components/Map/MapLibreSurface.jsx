@@ -57,19 +57,22 @@ export default function MapLibreSurface({
       type: "FeatureCollection",
       features: heatmapFeatures.slice(0, 18000).map((feature, index) => {
         const [lon, lat] = feature.geometry.coordinates;
-        const flux = feature.properties?.predicted_flux ?? feature.properties?.flux ?? 0;
+        const flux = feature.properties?.display_flux ?? feature.properties?.predicted_flux ?? feature.properties?.flux ?? 0;
         const [r, g, b] = fluxToColor(flux);
         const weakening = feature.properties?.weakening_score || 0;
         const routePriority = feature.properties?.route_priority || 0;
-        const intensity = Math.min(0.5, 0.08 + Math.abs(flux) * 0.06 + weakening * 0.18 + routePriority * 0.14);
+        const anomaly = feature.properties?.anomaly_score || 0;
+        const signal = feature.properties?.display_signal ?? (weakening * 4.2 + anomaly * 3.4 + routePriority * 1.5);
+        const intensity = Math.min(0.24, 0.02 + signal * 0.08 + Math.min(Math.abs(flux), 2.0) * 0.012);
         return cellPolygonFeature(
           `heat-cell-${index}`,
           lon,
           lat,
           {
             flux,
+            signal,
             fill: `rgba(${r}, ${g}, ${b}, ${intensity.toFixed(3)})`,
-            stroke: `rgba(${r}, ${g}, ${b}, ${(Math.min(0.72, intensity + 0.18)).toFixed(3)})`,
+            stroke: `rgba(${r}, ${g}, ${b}, ${(Math.min(0.4, intensity + 0.08)).toFixed(3)})`,
           },
           heatmapStep,
           heatmapStep
@@ -92,6 +95,7 @@ export default function MapLibreSurface({
         properties: {
           density: segment.density || 0,
           weakening: segment.weakening || 0,
+          route_mode: segment.routeMode || "port",
         },
       })),
     }),
@@ -101,18 +105,23 @@ export default function MapLibreSurface({
   const routeEndpointGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: routeSegments.flatMap((segment) => [
-        pointFeature(`route-origin-${segment.id}`, segment.source[0], segment.source[1], {
+      features: routeSegments.flatMap((segment) => {
+        const features = [pointFeature(`route-origin-${segment.id}`, segment.source[0], segment.source[1], {
           point_type: "trash_origin",
           label: segment.label,
           density: segment.density || 0,
-        }),
-        pointFeature(`route-target-${segment.id}`, segment.target[0], segment.target[1], {
-          point_type: "port_target",
-          label: segment.label,
-          density: segment.density || 0,
-        }),
-      ]),
+        })];
+        if (segment.routeMode === "transport") {
+          features.push(
+            pointFeature(`route-target-${segment.id}`, segment.target[0], segment.target[1], {
+              point_type: "transport_target",
+              label: segment.label,
+              density: segment.density || 0,
+            })
+          );
+        }
+        return features;
+      }),
     }),
     [routeSegments]
   );
@@ -120,7 +129,7 @@ export default function MapLibreSurface({
   const hotspotGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: co2Hotspots.slice(0, 120).map((point, index) =>
+      features: co2Hotspots.slice(0, 180).map((point, index) =>
         pointFeature(
           `co2-hotspot-${index}`,
           point.geometry.coordinates[0],
@@ -138,7 +147,7 @@ export default function MapLibreSurface({
   const anomalyGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: anomalies.slice(0, 24).map((anomaly) =>
+      features: anomalies.slice(0, 40).map((anomaly) =>
         pointFeature(`anomaly-${anomaly.id}`, anomaly.lon, anomaly.lat, {
           anomaly_score: anomaly.anomaly_score || 0,
         })
@@ -150,7 +159,7 @@ export default function MapLibreSurface({
   const trashGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: trashTargets.slice(0, 40).map((target) =>
+      features: trashTargets.slice(0, 80).map((target) =>
         pointFeature(`trash-${target.id}`, target.lon, target.lat, {
           intensity: target.intensity || 0,
           route_priority: target.routePriority || 0,
@@ -166,9 +175,9 @@ export default function MapLibreSurface({
   const trashLabelGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: trashTargets.slice(0, 16).map((target) =>
+      features: trashTargets.slice(0, 24).map((target) =>
         pointFeature(`trash-label-${target.id}`, target.lon, target.lat, {
-          label: target.clusterSize > 1 ? `Trash x${target.clusterSize}` : "Trash",
+          label: target.clusterSize > 1 ? `Trash x${target.clusterSize}` : "Trash hotspot",
         })
       ),
     }),
@@ -178,7 +187,7 @@ export default function MapLibreSurface({
   const hotspotLabelGeojson = useMemo(
     () => ({
       type: "FeatureCollection",
-      features: co2Hotspots.slice(0, 14).map((point, index) =>
+      features: co2Hotspots.slice(0, 20).map((point, index) =>
         pointFeature(
           `co2-label-${index}`,
           point.geometry.coordinates[0],
@@ -245,7 +254,12 @@ export default function MapLibreSurface({
             id="mission-routes-line"
             type="line"
             paint={{
-              "line-color": "#ffd166",
+              "line-color": [
+                "case",
+                ["==", ["get", "route_mode"], "transport"],
+                "#ff9f43",
+                "#ffd166",
+              ],
               "line-opacity": 0.96,
               "line-width": [
                 "interpolate",
@@ -269,7 +283,12 @@ export default function MapLibreSurface({
             id="mission-routes-glow"
             type="line"
             paint={{
-              "line-color": "#fff2b5",
+              "line-color": [
+                "case",
+                ["==", ["get", "route_mode"], "transport"],
+                "#ffe5b8",
+                "#fff2b5",
+              ],
               "line-opacity": 0.45,
               "line-width": [
                 "interpolate",
@@ -302,6 +321,8 @@ export default function MapLibreSurface({
                 "case",
                 ["==", ["get", "point_type"], "port_target"],
                 "#71d5ff",
+                ["==", ["get", "point_type"], "transport_target"],
+                "#ff9f43",
                 "#ffc43d",
               ],
               "circle-opacity": 0.96,
@@ -332,22 +353,22 @@ export default function MapLibreSurface({
               "circle-color": [
                 "case",
                 [">", ["get", "predicted_flux"], 0],
-                "#ff855f",
-                "#40dba8",
+                "#ff6d4d",
+                "#34e0c0",
               ],
-              "circle-opacity": 0.82,
-              "circle-stroke-color": "#e8f7ff",
-              "circle-stroke-width": 1.4,
+              "circle-opacity": 0.92,
+              "circle-stroke-color": "#dff7ff",
+              "circle-stroke-width": 1.8,
               "circle-radius": [
                 "interpolate",
                 ["linear"],
                 ["zoom"],
                 0,
-                4,
+                5,
                 2,
-                7,
+                8,
                 4,
-                11,
+                12,
               ],
             }}
           />
@@ -419,12 +440,12 @@ export default function MapLibreSurface({
               "circle-color": [
                 "case",
                 [">", ["get", "observed"], 0],
-                "#ffae42",
-                "#ffc43d",
+                "#ff9800",
+                "#ffd54a",
               ],
-              "circle-opacity": 0.88,
-              "circle-stroke-color": "#fff1c9",
-              "circle-stroke-width": 1.8,
+              "circle-opacity": 0.96,
+              "circle-stroke-color": "#fff6cc",
+              "circle-stroke-width": 2.8,
               "circle-radius": [
                 "interpolate",
                 ["linear"],
@@ -432,9 +453,28 @@ export default function MapLibreSurface({
                 0,
                 8,
                 2,
-                14,
+                12,
                 4,
-                18,
+                16,
+              ],
+            }}
+          />
+          <Layer
+            id="trash-targets-inner"
+            type="circle"
+            paint={{
+              "circle-color": "#7a5300",
+              "circle-opacity": 0.55,
+              "circle-radius": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                0,
+                2.5,
+                2,
+                3.5,
+                4,
+                5,
               ],
             }}
           />

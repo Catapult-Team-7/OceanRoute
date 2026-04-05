@@ -83,12 +83,11 @@ class DemoOceanRepository:
         era_config = self.trainer._config_by_id("era5") or {}
         copernicus_config = self.trainer._config_by_id("copernicus_marine") or {}
         try:
-            real_bundle = build_real_grid_bundle(
+            provisional_bundle = build_provisional_real_grid_bundle(
                 date=date,
                 resolution=resolution,
                 region=region,
                 trainer=self.trainer,
-                socat_url=str(socat_config.get("url", "")).strip(),
                 noaa_gml_url=str(noaa_config.get("url", "")).strip(),
                 era_directory=str(era_config.get("notes", "")).strip(),
                 copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
@@ -96,17 +95,23 @@ class DemoOceanRepository:
                 else str(copernicus_config.get("notes", "")).strip(),
                 reference_now=self.now,
             )
-            self.last_grid_metadata = real_bundle.metadata
-            self.last_real_anomalies = real_bundle.anomalies
-            self._grid_cache[cache_key] = (now_ts, list(real_bundle.rows), dict(real_bundle.metadata), list(real_bundle.anomalies))
-            return real_bundle.rows
+            self.last_grid_metadata = provisional_bundle.metadata
+            self.last_real_anomalies = provisional_bundle.anomalies
+            self._grid_cache[cache_key] = (
+                now_ts,
+                list(provisional_bundle.rows),
+                dict(provisional_bundle.metadata),
+                list(provisional_bundle.anomalies),
+            )
+            return provisional_bundle.rows
         except RealDataLoadError as exc:
             try:
-                provisional_bundle = build_provisional_real_grid_bundle(
+                real_bundle = build_real_grid_bundle(
                     date=date,
                     resolution=resolution,
                     region=region,
                     trainer=self.trainer,
+                    socat_url=str(socat_config.get("url", "")).strip(),
                     noaa_gml_url=str(noaa_config.get("url", "")).strip(),
                     era_directory=str(era_config.get("notes", "")).strip(),
                     copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
@@ -114,18 +119,18 @@ class DemoOceanRepository:
                     else str(copernicus_config.get("notes", "")).strip(),
                     reference_now=self.now,
                 )
-                provisional_bundle.metadata["source_summary"] = (
-                    f"{provisional_bundle.metadata.get('source_summary', '')} Verified publish is still blocked: {exc}"
+                real_bundle.metadata["source_summary"] = (
+                    f"{real_bundle.metadata.get('source_summary', '')} Fast provisional serving was unavailable: {exc}"
                 ).strip()
-                self.last_grid_metadata = provisional_bundle.metadata
-                self.last_real_anomalies = provisional_bundle.anomalies
+                self.last_grid_metadata = real_bundle.metadata
+                self.last_real_anomalies = real_bundle.anomalies
                 self._grid_cache[cache_key] = (
                     now_ts,
-                    list(provisional_bundle.rows),
-                    dict(provisional_bundle.metadata),
-                    list(provisional_bundle.anomalies),
+                    list(real_bundle.rows),
+                    dict(real_bundle.metadata),
+                    list(real_bundle.anomalies),
                 )
-                return provisional_bundle.rows
+                return real_bundle.rows
             except RealDataLoadError:
                 self.last_grid_metadata = {
                     "verified_map": False,

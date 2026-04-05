@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
@@ -7,63 +7,123 @@ import { fetchJson } from "../../utils/fetchJson";
 const API_LABEL = API_BASE || "current app origin";
 
 export default function ProgressDashboard() {
+  const lastHealthyAtRef = useRef(0);
   const [status, setStatus] = useState(null);
   const [artifacts, setArtifacts] = useState(null);
   const [backendHealth, setBackendHealth] = useState({ reachable: false, detail: "Checking backend..." });
 
   useEffect(() => {
     let cancelled = false;
+    let statusTimer = null;
+    let artifactTimer = null;
+    let healthTimer = null;
+
+    function scheduleStatus(delayMs) {
+      window.clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(loadStatus, delayMs);
+    }
+
+    function scheduleArtifacts(delayMs) {
+      window.clearTimeout(artifactTimer);
+      artifactTimer = window.setTimeout(loadArtifacts, delayMs);
+    }
+
+    function scheduleHealth(delayMs) {
+      window.clearTimeout(healthTimer);
+      healthTimer = window.setTimeout(loadHealth, delayMs);
+    }
 
     async function loadHealth() {
       try {
-        const data = await fetchJson(`${API_BASE}/health`, { timeoutMs: 3500 });
+        await fetchJson(`${API_BASE}/health`, { timeoutMs: 15000 });
         if (!cancelled) {
-          setBackendHealth({
-            reachable: data.status === "ok",
-            detail: data.status === "ok" ? `Backend reachable at ${API_LABEL}` : "Unexpected backend health response.",
-          });
+          lastHealthyAtRef.current = Date.now();
+          setBackendHealth((current) => ({
+            reachable: true,
+            detail:
+              status?.status === "running"
+                ? `Backend is busy at ${API_LABEL}, but responding.`
+                : `Backend reachable at ${API_LABEL}`,
+          }));
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && Date.now() - lastHealthyAtRef.current >= 180000) {
           setBackendHealth({
             reachable: false,
             detail: `Backend unreachable at ${API_LABEL}.`,
           });
+        }
+      } finally {
+        if (!cancelled) {
+          scheduleHealth(status?.status === "running" ? 10000 : 20000);
         }
       }
     }
 
     async function loadStatus() {
       try {
-        const data = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 5000 });
-        if (!cancelled) setStatus(data);
+        const data = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setStatus(data);
+          setBackendHealth({
+            reachable: true,
+            detail: data?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
       } catch (error) {
-        if (!cancelled) setStatus(null);
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: Date.now() - lastHealthyAtRef.current < 60000,
+            detail:
+              Date.now() - lastHealthyAtRef.current < 60000
+                ? `Backend is busy at ${API_LABEL}; waiting for status refresh.`
+                : `Backend unreachable at ${API_LABEL}.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          const running = status?.status === "running";
+          scheduleStatus(running ? 4000 : 8000);
+        }
       }
     }
 
     async function loadArtifacts() {
       try {
-        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 5000 });
-        if (!cancelled) setArtifacts(data);
+        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setArtifacts(data);
+          setBackendHealth((current) => ({
+            reachable: true,
+            detail:
+              current.reachable && current.detail.includes("busy")
+                ? current.detail
+                : `Backend reachable at ${API_LABEL}`,
+          }));
+        }
       } catch (error) {
-        if (!cancelled) setArtifacts(null);
+        if (!cancelled && Date.now() - lastHealthyAtRef.current >= 60000) setArtifacts(null);
+      } finally {
+        if (!cancelled) {
+          scheduleArtifacts(status?.status === "running" ? 12000 : 20000);
+        }
       }
     }
 
-    loadHealth();
     loadStatus();
     loadArtifacts();
-    const interval = window.setInterval(loadStatus, 1200);
-    const healthInterval = window.setInterval(loadHealth, 2500);
-    const artifactInterval = window.setInterval(loadArtifacts, 4000);
+    loadHealth();
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
-      window.clearInterval(healthInterval);
-      window.clearInterval(artifactInterval);
+      window.clearTimeout(statusTimer);
+      window.clearTimeout(artifactTimer);
+      window.clearTimeout(healthTimer);
     };
-  }, []);
+  }, [status?.status]);
 
   const downloadProgress = status?.metrics?.download_progress;
   const connectorState = status?.data_summary?.connector_state || {};

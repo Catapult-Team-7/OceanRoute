@@ -12,27 +12,30 @@ export function useMlStatus() {
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
+    let pollTimer = null;
 
     async function load() {
       try {
         const data = await fetchJson(`${API_BASE}/api/ml/status`, {
           signal: controller.signal,
-          timeoutMs: 7000,
+          timeoutMs: 12000,
         });
         if (!cancelled) setMlRuntimeStatus(data);
       } catch (error) {
         if (!cancelled && error.name !== "AbortError") {
           console.error("Failed to fetch ML status", error);
         }
+      } finally {
+        if (!cancelled && currentView === "mission") {
+          pollTimer = window.setTimeout(load, 20000);
+        }
       }
     }
 
     load();
-    const shouldPoll = currentView === "ml" || currentView === "progress";
-    const pollTimer = shouldPoll ? window.setInterval(load, 10000) : null;
     return () => {
       cancelled = true;
-      if (pollTimer) window.clearInterval(pollTimer);
+      if (pollTimer) window.clearTimeout(pollTimer);
       controller.abort();
     };
   }, [currentView, refreshNonce, setMlRuntimeStatus]);

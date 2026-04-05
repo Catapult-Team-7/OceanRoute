@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.concurrency import run_in_threadpool
 
 from db.crud import get_flux_grid
 from db.database import get_repo
@@ -10,15 +11,8 @@ from db.models import FeatureGeometry, FeatureProperties, FluxFeature, HeatmapMe
 router = APIRouter()
 
 
-@router.get("/heatmap", response_model=HeatmapResponse)
-async def heatmap(
-    request: Request,
-    date: str | None = Query(default=None, description="YYYY-MM"),
-    resolution: str = Query(default="1deg", pattern="^(0.25deg|0.5deg|1deg|2deg)$"),
-    region: str = Query(default="global", pattern="^(global|pacific|atlantic|indian)$"),
-    repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
-):
-    rows = await get_flux_grid(repo, date=date, resolution=resolution, region=region)
+def _build_heatmap_response(repo: DemoOceanRepository, request_date: str | None, resolution: str, region: str) -> HeatmapResponse:
+    rows = repo.get_flux_grid(date=request_date, resolution=resolution, region=region)
     features = []
     for row in rows:
         if row.predicted_flux is not None:
@@ -37,6 +31,8 @@ async def heatmap(
                     flux=ml_scores["predicted_flux"],
                     observed_flux=ml_scores["observed_flux"],
                     predicted_flux=ml_scores["predicted_flux"],
+                    display_flux=getattr(row, "display_flux", None),
+                    display_signal=getattr(row, "display_signal", None),
                     sst=row.sst,
                     current_u=getattr(row, "current_u", None),
                     current_v=getattr(row, "current_v", None),
@@ -51,7 +47,7 @@ async def heatmap(
     sink_area_pct = sum(1 for feature in features if feature.properties.flux < 0) / max(len(features), 1) * 100
     return HeatmapResponse(
         metadata=HeatmapMetadata(
-            date=repo.last_grid_metadata.get("date", date or request.app.state.repo.now.strftime("%Y-%m")),
+            date=repo.last_grid_metadata.get("date", request_date or repo.now.strftime("%Y-%m")),
             units="mol CO2/m²/yr",
             mean_flux=round(mean_flux, 3),
             sink_area_pct=round(sink_area_pct, 1),
@@ -68,3 +64,14 @@ async def heatmap(
         ),
         features=features,
     )
+
+
+@router.get("/heatmap", response_model=HeatmapResponse)
+async def heatmap(
+    request: Request,
+    date: str | None = Query(default=None, description="YYYY-MM"),
+    resolution: str = Query(default="1deg", pattern="^(0.25deg|0.5deg|1deg|2deg)$"),
+    region: str = Query(default="global", pattern="^(global|pacific|atlantic|indian)$"),
+    repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
+):
+    return await run_in_threadpool(_build_heatmap_response, repo, date, resolution, region)

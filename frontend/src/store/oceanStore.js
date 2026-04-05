@@ -4,8 +4,12 @@ function monthString(date) {
   return date.toISOString().slice(0, 7);
 }
 
+function initialView() {
+  return "ml";
+}
+
 export const useOceanStore = create((set) => ({
-  currentView: "mission",
+  currentView: initialView(),
   selectedDate: monthString(new Date()),
   selectedPoint: null,
   selectedRegion: "global",
@@ -20,7 +24,12 @@ export const useOceanStore = create((set) => ({
   isLoading: false,
   refreshNonce: 0,
   wsConnected: false,
-  setCurrentView: (currentView) => set({ currentView }),
+  setCurrentView: (currentView) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("oceanpulse.currentView", currentView);
+    }
+    set({ currentView });
+  },
   setSelectedDate: (selectedDate) => set({ selectedDate }),
   setSelectedPoint: (selectedPoint) => set({ selectedPoint }),
   setSelectedRegion: (selectedRegion) => set({ selectedRegion }),

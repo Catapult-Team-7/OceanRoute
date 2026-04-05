@@ -22,7 +22,7 @@ export function useAnomalies() {
         const params = new URLSearchParams({ date: selectedDate, threshold: "0.35", limit: "12" });
         const data = await fetchJson(`${API_BASE}/api/anomalies?${params.toString()}`, {
           signal: controller.signal,
-          timeoutMs: 7000,
+          timeoutMs: 15000,
         });
         if (!cancelled) {
           setAnomalies(

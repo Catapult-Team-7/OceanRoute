@@ -33,7 +33,7 @@ export function useHeatmapData() {
         });
         const data = await fetchJson(`${API_BASE}/api/heatmap?${params.toString()}`, {
           signal: controller.signal,
-          timeoutMs: 9000,
+          timeoutMs: 45000,
         });
         if (!cancelled) setHeatmapData(data);
       } catch (error) {

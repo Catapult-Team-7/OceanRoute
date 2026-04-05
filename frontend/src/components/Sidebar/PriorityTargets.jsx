@@ -95,7 +95,11 @@ export default function PriorityTargets() {
               </small>
             </>
           ) : (
-            <small>Port routing appears once an observed trash hotspot and port link are available.</small>
+            <small>
+              {recovery?.metadata?.transport_path?.length > 1
+                ? "Following the ML transport path while a port destination is still unavailable."
+                : "Port routing appears once a port link is available."}
+            </small>
           )}
         </div>
       </div>

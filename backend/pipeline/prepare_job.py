@@ -8,7 +8,7 @@ from .jobs import prepare_training_artifacts
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare HPC-friendly training artifacts for OceanPulse.")
-    parser.add_argument("--epochs", type=int, default=24)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=0.005)
     parser.add_argument("--month-window", type=int, default=12)
     parser.add_argument("--resolution", default="2deg")

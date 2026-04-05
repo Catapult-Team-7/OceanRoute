@@ -42,13 +42,57 @@ function selectSpacedFeatures(points, minDistanceDeg, limit, predicate = null) {
 function hotspotStrength(point) {
   const predicted = point.properties?.predicted_flux || 0;
   const observed = point.properties?.observed_flux ?? predicted;
+  const displaySignal = point.properties?.display_signal || 0;
   const weakening = point.properties?.weakening_score || 0;
   const anomaly = point.properties?.anomaly_score || 0;
-  return Math.abs(predicted - observed) * 1.6 + Math.abs(predicted) * 0.7 + weakening * 3.0 + anomaly * 1.5;
+  return Math.abs(predicted - observed) * 1.6 + displaySignal * 2.1 + weakening * 3.0 + anomaly * 1.5;
+}
+
+function co2HotspotScore(point) {
+  const predicted = point.properties?.predicted_flux || 0;
+  const observed = point.properties?.observed_flux ?? predicted;
+  const displayFlux = point.properties?.display_flux ?? predicted;
+  const displaySignal = point.properties?.display_signal || 0;
+  const weakening = point.properties?.weakening_score || 0;
+  const anomaly = point.properties?.anomaly_score || 0;
+  const routePriority = point.properties?.route_priority || 0;
+  return (
+    Math.abs(predicted - observed) * 0.9 +
+    Math.abs(displayFlux) * 0.9 +
+    displaySignal * 1.6 +
+    weakening * 3.6 +
+    anomaly * 2.2 +
+    routePriority * 1.1
+  );
 }
 
 function routeStrength(target) {
-  return (target.routePriority || 0) * 1.3 + (target.intensity || 0) * 0.7 + (target.weakening || 0) * 0.5;
+  return (
+    (target.routePriority || target.metadata?.route_priority || 0) * 1.3 +
+    (target.intensity || 0) * 0.7 +
+    (target.weakening || target.metadata?.weakening_score || 0) * 0.5
+  );
+}
+
+function mapSignalScore(point) {
+  const properties = point?.properties || {};
+  const predicted = properties.predicted_flux || 0;
+  const observed = properties.observed_flux ?? predicted;
+  return (
+    (properties.display_signal || 0) * 2.1 +
+    (properties.weakening_score || 0) * 4.2 +
+    (properties.anomaly_score || 0) * 3.4 +
+    (properties.route_priority || 0) * 1.5 +
+    Math.abs((properties.display_flux ?? predicted)) * 0.8 +
+    Math.abs(predicted - observed) * 0.85
+  );
+}
+
+function pointDistanceToSeed(point, seed) {
+  return distanceDeg(
+    { lat: point.geometry.coordinates[1], lon: point.geometry.coordinates[0] },
+    seed
+  );
 }
 
 export default function OceanMap() {
@@ -88,8 +132,24 @@ export default function OceanMap() {
     () =>
       [...trashTargets]
         .sort((a, b) => routeStrength(b) - routeStrength(a))
-        .slice(0, selectedRegion === "global" ? 10 : 16),
+        .slice(0, selectedRegion === "global" ? 30 : 36),
     [selectedRegion, trashTargets]
+  );
+  const rawRouteTargets = useMemo(
+    () =>
+      [...(trashData?.hotspots || [])]
+        .filter(
+          (target) =>
+            target.nearest_port ||
+            (Array.isArray(target.metadata?.transport_path) && target.metadata.transport_path.length > 1)
+        )
+        .sort(
+          (a, b) =>
+            ((b.metadata?.route_priority || 0) + (b.intensity || 0)) -
+            ((a.metadata?.route_priority || 0) + (a.intensity || 0))
+        )
+        .slice(0, selectedRegion === "global" ? 22 : 28),
+    [selectedRegion, trashData?.hotspots]
   );
   const prioritySummary = useMemo(
     () => buildTopMissionTargets(points, visibleAnomalies, viewState.zoom, verifiedMap),
@@ -98,41 +158,68 @@ export default function OceanMap() {
 
   const routedTrashTargets = useMemo(
     () => {
-      const seenPorts = new Set();
+      const seenTransportOrigins = new Set();
       const selected = [];
-      for (const item of [...visibleTrashTargets]
-        .filter((target) => target.routeTarget)
+      for (const item of [...rawRouteTargets]
+        .filter(
+          (target) =>
+            target.routeTarget ||
+            target.nearest_port ||
+            (Array.isArray(target.metadata?.transport_path) && target.metadata.transport_path.length > 1)
+        )
         .sort((a, b) => routeStrength(b) - routeStrength(a))) {
-        const portKey = `${item.routeTarget.name}:${item.routeTarget.lat}:${item.routeTarget.lon}`;
-        if (seenPorts.has(portKey)) {
-          continue;
+        if (!item.routeTarget) {
+          const path = item.metadata?.transport_path || [];
+          const end = path[path.length - 1] || [item.lon, item.lat];
+          const transportKey = `${Math.round(item.lat)}:${Math.round(item.lon)}:${Math.round(end[1])}:${Math.round(end[0])}`;
+          if (seenTransportOrigins.has(transportKey)) {
+            continue;
+          }
+          seenTransportOrigins.add(transportKey);
         }
-        seenPorts.add(portKey);
         selected.push(item);
-        if (selected.length >= (selectedRegion === "global" ? 4 : 7)) {
+        if (selected.length >= (selectedRegion === "global" ? 18 : 20)) {
           break;
         }
       }
       return selected;
     },
-    [selectedRegion, visibleTrashTargets]
+    [rawRouteTargets, selectedRegion]
   );
 
   const routeSegments = useMemo(
     () =>
       routedTrashTargets
-        .map((item) => ({
-        id: `${item.id}-route`,
-        path: [
-          [item.lon, item.lat],
-          [item.routeTarget.lon, item.routeTarget.lat],
-        ],
-        source: [item.lon, item.lat],
-        target: [item.routeTarget.lon, item.routeTarget.lat],
-        density: item.routePriority || item.intensity || 0,
-        label: `${item.label} to ${item.routeTarget.name}`,
-        weakening: item.weakening || 0,
-      })),
+        .map((item) => {
+          const transportPath =
+            Array.isArray(item.metadata?.transport_path) && item.metadata.transport_path.length > 1
+              ? item.metadata.transport_path
+              : null;
+          const routeTarget = item.routeTarget || item.nearest_port || null;
+          const path = routeTarget
+            ? [
+                ...(transportPath || [[item.lon, item.lat]]),
+                [routeTarget.lon, routeTarget.lat],
+              ]
+            : transportPath || [[item.lon, item.lat]];
+          return {
+            id: `${item.id}-route`,
+            path,
+            source: [item.lon, item.lat],
+            target: transportPath
+              ? transportPath[transportPath.length - 1]
+              : routeTarget
+                ? [routeTarget.lon, routeTarget.lat]
+                : [item.lon, item.lat],
+            density: item.routePriority || item.intensity || 0,
+            label: routeTarget
+              ? `${item.label} to ${routeTarget.name}`
+              : `${item.label} current transport`,
+            weakening: item.weakening || item.metadata?.weakening_score || 0,
+            routeMode: routeTarget ? "port" : "transport",
+          };
+        })
+      .filter((item) => item.path.length > 1),
     [routedTrashTargets]
   );
 
@@ -140,14 +227,21 @@ export default function OceanMap() {
     () => {
       const ranked = [...points]
         .filter((point) => point?.properties)
-        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 55)
-        .sort((a, b) => hotspotStrength(b) - hotspotStrength(a));
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 62)
+        .filter(
+          (point) =>
+            (point.properties.display_signal || 0) >= 0.38 ||
+            (point.properties.weakening_score || 0) >= 0.14 ||
+            (point.properties.anomaly_score || 0) >= 0.12 ||
+            (point.properties.route_priority || 0) >= 0.38
+        )
+        .sort((a, b) => co2HotspotScore(b) - co2HotspotScore(a));
       return selectSpacedFeatures(
         ranked,
-        selectedRegion === "global" ? 16 : 8,
-        selectedRegion === "global" ? 20 : 28,
+        selectedRegion === "global" ? 8 : 5,
+        selectedRegion === "global" ? 28 : 34,
         (point) =>
-          hotspotStrength(point) >= (selectedRegion === "global" ? 1.3 : 0.85)
+          co2HotspotScore(point) >= (selectedRegion === "global" ? 1.0 : 0.8)
       );
     },
     [points, selectedRegion]
@@ -156,13 +250,13 @@ export default function OceanMap() {
   const weakeningZones = useMemo(
     () => {
       const ranked = [...points]
-        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 55)
-        .filter((point) => (point.properties.weakening_score || 0) > 0.26)
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 60)
+        .filter((point) => (point.properties.weakening_score || 0) > 0.1)
         .sort((a, b) => (b.properties.weakening_score || 0) - (a.properties.weakening_score || 0));
       return selectSpacedFeatures(
         ranked,
-        selectedRegion === "global" ? 18 : 8,
-        selectedRegion === "global" ? 12 : 18
+        selectedRegion === "global" ? 9 : 5,
+        selectedRegion === "global" ? 26 : 28
       );
     },
     [points, selectedRegion]
@@ -177,6 +271,40 @@ export default function OceanMap() {
       })),
     [routedTrashTargets, viewState.zoom]
   );
+
+  const fieldHighlights = useMemo(() => {
+    const seedLocations = [
+      ...hotspotNodes.map((point) => ({
+        lat: point.geometry.coordinates[1],
+        lon: point.geometry.coordinates[0],
+      })),
+      ...weakeningZones.slice(0, 8).map((point) => ({
+        lat: point.geometry.coordinates[1],
+        lon: point.geometry.coordinates[0],
+      })),
+      ...visibleAnomalies.map((anomaly) => ({ lat: anomaly.lat, lon: anomaly.lon })),
+      ...visibleTrashTargets.map((target) => ({ lat: target.lat, lon: target.lon })),
+    ];
+
+    const strongThreshold = selectedRegion === "global" ? 1.65 : 1.05;
+    const contextualThreshold = selectedRegion === "global" ? 0.72 : 0.5;
+    const contextualDistance = selectedRegion === "global" ? 8.5 : 5;
+
+    return [...points]
+      .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 60)
+      .filter((point) => {
+        const score = mapSignalScore(point);
+        if (score >= strongThreshold) {
+          return true;
+        }
+        return (
+          score >= contextualThreshold &&
+          seedLocations.some((seed) => pointDistanceToSeed(point, seed) <= contextualDistance)
+        );
+      })
+      .sort((a, b) => mapSignalScore(b) - mapSignalScore(a))
+      .slice(0, selectedRegion === "global" ? 900 : 1200);
+  }, [hotspotNodes, points, selectedRegion, visibleAnomalies, visibleTrashTargets, weakeningZones]);
 
   const tooltipText = ({ object }) => {
     if (!object) return null;
@@ -356,7 +484,7 @@ export default function OceanMap() {
         <Suspense fallback={null}>
           <MapLibreSurface
             basemapStyle={basemapStyle}
-            heatmapFeatures={points}
+            heatmapFeatures={fieldHighlights}
             co2Hotspots={hotspotNodes}
             trashTargets={visibleTrashTargets}
             routeSegments={routeSegments}

@@ -113,6 +113,63 @@ def _smooth_spatial_grid(values: np.ndarray, mask: np.ndarray | None = None, pas
     return smoothed
 
 
+def _flux_feature_matrix(frame: pd.DataFrame) -> np.ndarray:
+    current_u = pd.to_numeric(frame.get("copernicus_u", pd.Series(index=frame.index, dtype=float)), errors="coerce").fillna(0.0)
+    current_v = pd.to_numeric(frame.get("copernicus_v", pd.Series(index=frame.index, dtype=float)), errors="coerce").fillna(0.0)
+    sea_level = pd.to_numeric(frame.get("copernicus_zos", pd.Series(index=frame.index, dtype=float)), errors="coerce").fillna(0.0)
+    lat = pd.to_numeric(frame.get("lat_bin", frame.get("lat", pd.Series(index=frame.index, dtype=float))), errors="coerce").fillna(0.0)
+    lon = _normalize_longitude(frame.get("lon_bin", frame.get("lon", pd.Series(index=frame.index, dtype=float)))).fillna(0.0)
+    month = pd.to_numeric(frame["month"], errors="coerce").fillna(1.0)
+    month_angle = 2 * np.pi * month / 12.0
+    current_speed = np.sqrt((current_u.to_numpy(dtype=float) ** 2) + (current_v.to_numpy(dtype=float) ** 2))
+    return np.column_stack(
+        [
+            pd.to_numeric(frame["sst"], errors="coerce").fillna(0.0).to_numpy(dtype=float) / 30.0,
+            pd.to_numeric(frame["salinity"], errors="coerce").fillna(35.0).to_numpy(dtype=float) / 40.0,
+            pd.to_numeric(frame["wind_speed"], errors="coerce").fillna(0.0).to_numpy(dtype=float) / 20.0,
+            current_u.to_numpy(dtype=float) / 3.0,
+            current_v.to_numpy(dtype=float) / 3.0,
+            current_speed / 4.0,
+            sea_level.to_numpy(dtype=float) / 2.0,
+            pd.to_numeric(frame["pco2_atm"], errors="coerce").fillna(0.0).to_numpy(dtype=float) / 500.0,
+            lat.to_numpy(dtype=float) / 80.0,
+            lon.to_numpy(dtype=float) / 180.0,
+            np.sin(month_angle.to_numpy(dtype=float)),
+            np.cos(month_angle.to_numpy(dtype=float)),
+        ]
+    ).astype(np.float64)
+
+
+def _fit_flux_surrogate(observed_frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float]:
+    design = _flux_feature_matrix(observed_frame)
+    target = pd.to_numeric(observed_frame["target_flux"], errors="coerce").to_numpy(dtype=np.float64)
+    valid_mask = np.isfinite(design).all(axis=1) & np.isfinite(target)
+    if valid_mask.sum() < 32:
+        raise RealDataLoadError("Need at least 32 valid observed flux rows to fit dense global training targets.")
+
+    design = design[valid_mask]
+    target = target[valid_mask]
+    feature_mean = design.mean(axis=0, keepdims=True)
+    feature_std = design.std(axis=0, keepdims=True) + 1e-6
+    normalized = (design - feature_mean) / feature_std
+    ridge = 5e-2 * np.eye(normalized.shape[1], dtype=np.float64)
+    weights = np.linalg.solve(normalized.T @ normalized + ridge, normalized.T @ target)
+    bias = float(np.mean(target - (normalized @ weights)))
+    lower_q, upper_q = np.quantile(target, [0.02, 0.98])
+    return feature_mean, feature_std, weights, bias, float(lower_q), float(upper_q)
+
+
+def _predict_flux_from_surrogate(
+    frame: pd.DataFrame,
+    surrogate: tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float],
+) -> np.ndarray:
+    feature_mean, feature_std, weights, bias, lower_q, upper_q = surrogate
+    design = _flux_feature_matrix(frame)
+    normalized = (design - feature_mean) / feature_std
+    predicted = (normalized @ weights) + bias
+    return np.clip(predicted, lower_q, upper_q).astype(np.float32)
+
+
 def _prepare_target_frame(
     socat_url: str,
     noaa_gml_url: str,
@@ -165,7 +222,7 @@ def _prepare_target_frame(
     if merged.empty:
         raise RealDataLoadError("No usable target flux rows were produced for monthly tensor building.")
 
-    target_grid = (
+    observed_target_grid = (
         merged.groupby(["year", "month", "lat_bin", "lon_bin"], as_index=False)
         .agg(
             target_flux=("target_flux", "mean"),
@@ -175,6 +232,59 @@ def _prepare_target_frame(
         )
         .sort_values(["year", "month", "lat_bin", "lon_bin"])
     )
+
+    surrogate = _fit_flux_surrogate(merged)
+    monthly_bias = observed_target_grid.merge(
+        merged.groupby(["year", "month"], as_index=False)
+        .agg(
+            observed_flux_mean=("target_flux", "mean"),
+        ),
+        on=["year", "month"],
+        how="left",
+    )[["year", "month"]].drop_duplicates()
+    observed_proxy = merged[["year", "month", "lat_bin", "lon_bin", "target_flux", "sst", "salinity", "wind_speed", "pco2_atm"]].copy()
+    observed_proxy["copernicus_u"] = merged.get("copernicus_u", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
+    observed_proxy["copernicus_v"] = merged.get("copernicus_v", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
+    observed_proxy["copernicus_zos"] = merged.get("copernicus_zos", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
+    observed_proxy["predicted_flux_proxy"] = _predict_flux_from_surrogate(observed_proxy, surrogate)
+    month_bias = (
+        observed_proxy.groupby(["year", "month"], as_index=False)
+        .apply(lambda frame: pd.Series({"month_bias": float(np.mean(frame["target_flux"] - frame["predicted_flux_proxy"]))}))
+        .reset_index(drop=True)
+    )
+
+    dense_grid = cop.copy()
+    dense_grid = dense_grid.merge(atmospheric[["year", "month", "pco2_atm"]], on=["year", "month"], how="inner")
+    dense_grid = dense_grid.merge(era_monthly, on=["year", "month"], how="left")
+    dense_grid["sst"] = dense_grid.get("copernicus_thetao", pd.Series(index=dense_grid.index, dtype=float))
+    dense_grid["sst"] = dense_grid["sst"].fillna(dense_grid.get("era5_sst_c", pd.Series(index=dense_grid.index, dtype=float)))
+    dense_grid["salinity"] = dense_grid.get("copernicus_salinity", pd.Series(index=dense_grid.index, dtype=float))
+    dense_grid["wind_speed"] = dense_grid.get("era5_wind_speed", pd.Series(index=dense_grid.index, dtype=float))
+    dense_grid["copernicus_u"] = dense_grid.get("copernicus_u", pd.Series(index=dense_grid.index, dtype=float)).fillna(0.0)
+    dense_grid["copernicus_v"] = dense_grid.get("copernicus_v", pd.Series(index=dense_grid.index, dtype=float)).fillna(0.0)
+    dense_grid["copernicus_zos"] = dense_grid.get("copernicus_zos", pd.Series(index=dense_grid.index, dtype=float)).fillna(0.0)
+    dense_grid = dense_grid.dropna(subset=["sst", "salinity", "wind_speed", "pco2_atm"])
+    if dense_grid.empty:
+        raise RealDataLoadError("No dense gridded Copernicus/ERA5/NOAA rows were available to build global training targets.")
+
+    dense_grid["target_flux"] = _predict_flux_from_surrogate(dense_grid, surrogate)
+    dense_grid = dense_grid.merge(month_bias, on=["year", "month"], how="left")
+    dense_grid["target_flux"] = dense_grid["target_flux"] + dense_grid["month_bias"].fillna(0.0)
+    dense_grid["target_flux"] = _winsorize_series(dense_grid["target_flux"], lower_q=0.02, upper_q=0.98)
+
+    target_grid = dense_grid.merge(
+        observed_target_grid,
+        on=["year", "month", "lat_bin", "lon_bin"],
+        how="left",
+        suffixes=("", "_observed"),
+    )
+    target_grid["target_flux"] = target_grid["target_flux_observed"].fillna(target_grid["target_flux"])
+    target_grid["observed_count"] = target_grid["observed_count"].fillna(0).astype(int)
+    target_grid["sst_obs"] = target_grid["sst_obs"].fillna(target_grid["sst"])
+    target_grid["salinity_obs"] = target_grid["salinity_obs"].fillna(target_grid["salinity"])
+    target_grid = target_grid[["year", "month", "lat_bin", "lon_bin", "target_flux", "observed_count", "sst_obs", "salinity_obs"]]
+    target_grid = target_grid.sort_values(["year", "month", "lat_bin", "lon_bin"]).reset_index(drop=True)
+
     return target_grid, atmospheric, era_monthly.merge(
         cop.groupby(["year", "month"], as_index=False).mean(numeric_only=True),
         on=["year", "month"],
@@ -207,6 +317,16 @@ def build_monthly_training_tensors(
         {(int(row.year), int(row.month)) for row in target_grid.itertuples(index=False)}
         & {(int(row.year), int(row.month)) for row in atmospheric.itertuples(index=False)}
     )
+    if len(months) < 3:
+        raise RealDataLoadError(
+            f"Not enough monthly records for sequence training. Need at least 3 overlapping months, found {len(months)}."
+        )
+
+    requested_month_window = int(month_window)
+    minimum_sequence_samples = 8
+    effective_month_window = min(requested_month_window, max(1, len(months) - minimum_sequence_samples))
+    if effective_month_window < requested_month_window:
+        month_window = effective_month_window
     if len(months) <= month_window:
         raise RealDataLoadError(
             f"Not enough monthly records for sequence training. Need > {month_window} overlapping months, found {len(months)}."
@@ -329,6 +449,8 @@ def build_monthly_training_tensors(
         "reference_now": reference_now.astimezone(timezone.utc).isoformat(),
         "resolution": resolution,
         "month_window": month_window,
+        "requested_month_window": requested_month_window,
+        "effective_month_window": month_window,
         "grid_shape": [int(len(lat_values)), int(len(lon_values))],
     }
     metadata_path.write_text(json.dumps(metadata, indent=2))
@@ -340,6 +462,10 @@ def build_monthly_training_tensors(
         "feature_count": int(x_tensor.shape[2]),
         "feature_names": feature_names,
         "target_months": sample_months,
+        "requested_month_window": requested_month_window,
+        "effective_month_window": int(month_window),
+        "available_overlap_months": int(len(months)),
+        "minimum_sequence_samples_target": int(minimum_sequence_samples),
         "denoising": {
             "winsorized_columns": ["sst", "salinity", "wind_speed", "pco2_ocean", "pco2_atm", "target_flux"],
             "target_flux_clip_quantiles": [0.02, 0.98],

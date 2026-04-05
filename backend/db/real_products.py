@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,14 @@ REGION_BOUNDS = {
 }
 
 
+def _normalize_directory_key(path_value: str | Path | None, fallback: Path) -> str:
+    raw = str(path_value or "").strip()
+    path = Path(raw).expanduser() if raw else fallback
+    if not path.is_absolute():
+        path = fallback.parents[1] / path
+    return str(path.resolve())
+
+
 @dataclass
 class RealGridBundle:
     rows: list[FluxPoint]
@@ -66,6 +75,14 @@ def _operational_latitude_weight(lat: float) -> float:
     if absolute_lat >= 80:
         return 0.35
     return max(0.35, 1.0 - ((absolute_lat - 55.0) / 25.0) * 0.65)
+
+
+def _edge_longitude_weight(lon: float, resolution: str) -> float:
+    edge_band = _resolution_step(resolution) * 1.5
+    distance_to_edge = abs(180.0 - abs(float(lon)))
+    if distance_to_edge >= edge_band:
+        return 1.0
+    return max(0.12, distance_to_edge / max(edge_band, 1e-6))
 
 
 def _smooth_spatial_grid(values: np.ndarray, support_mask: np.ndarray | None = None, passes: int = 2) -> np.ndarray:
@@ -110,6 +127,19 @@ def _current_convergence_grid(current_u: np.ndarray, current_v: np.ndarray, supp
     convergence = np.maximum(0.0, -divergence)
     convergence = _smooth_spatial_grid(convergence, support_mask, passes=2)
     return _normalized_score_grid(convergence, support_mask, floor=0.04)
+
+
+def _support_density_grid(support_mask: np.ndarray) -> np.ndarray:
+    support = np.asarray(support_mask, dtype=np.float32)
+    if not support.any():
+        return np.zeros_like(support, dtype=np.float32)
+    padded = np.pad(support, ((1, 1), (1, 1)), mode="edge")
+    density = np.zeros_like(support, dtype=np.float32)
+    for di in range(3):
+        for dj in range(3):
+            density += padded[di : di + support.shape[0], dj : dj + support.shape[1]]
+    density /= 9.0
+    return np.where(support_mask, density, 0.0)
 
 
 def _local_peak_mask(
@@ -158,6 +188,18 @@ def _select_spaced_anomalies(
         if len(selected) >= limit:
             break
     return selected
+
+
+def _residual_structure_grids(
+    predicted_grid: np.ndarray,
+    support_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    smoothed_prediction = _smooth_spatial_grid(predicted_grid, support_mask, passes=2)
+    background_grid = _smooth_spatial_grid(smoothed_prediction, support_mask, passes=7)
+    residual_grid = np.where(support_mask, smoothed_prediction - background_grid, 0.0)
+    gy, gx = np.gradient(residual_grid)
+    gradient_grid = np.sqrt((gy**2) + (gx**2))
+    return smoothed_prediction, residual_grid, gradient_grid
 
 
 def _month_from_string(date_str: str | None) -> tuple[int, int] | None:
@@ -394,12 +436,44 @@ def _support_cells_for_month(copernicus_monthly: pd.DataFrame, target_month: tup
     }
 
 
-def _load_monthly_drivers(noaa_gml_url: str, era_directory: str | Path | None, copernicus_directory: str | Path | None, resolution: str):
+@lru_cache(maxsize=8)
+def _load_monthly_drivers_cached(
+    noaa_gml_url: str,
+    era_directory_key: str,
+    copernicus_directory_key: str,
+    resolution: str,
+):
     atmospheric = load_noaa_gml_monthly(noaa_gml_url)
-    era_monthly = load_era5_monthly(era_directory or default_era5_directory())
-    copernicus_monthly = load_copernicus_monthly(copernicus_directory or default_copernicus_directory())
+    era_monthly = load_era5_monthly(era_directory_key)
+    copernicus_monthly = load_copernicus_monthly(copernicus_directory_key)
     copernicus_monthly = _aggregate_copernicus_to_resolution(copernicus_monthly, resolution)
     return atmospheric, era_monthly, copernicus_monthly
+
+
+def _load_monthly_drivers(noaa_gml_url: str, era_directory: str | Path | None, copernicus_directory: str | Path | None, resolution: str):
+    era_key = _normalize_directory_key(era_directory, default_era5_directory())
+    copernicus_key = _normalize_directory_key(copernicus_directory, default_copernicus_directory())
+    return _load_monthly_drivers_cached(noaa_gml_url, era_key, copernicus_key, resolution)
+
+
+@lru_cache(maxsize=24)
+def _build_observed_flux_grid_cached(
+    socat_url: str,
+    noaa_gml_url: str,
+    year: int,
+    month: int,
+    resolution: str,
+    wind_speed: float,
+) -> dict[tuple[float, float], float]:
+    atmospheric = load_noaa_gml_monthly(noaa_gml_url)
+    target_month = (year, month)
+    return _build_observed_flux_grid(
+        socat_url=socat_url,
+        atmospheric=atmospheric,
+        target_month=target_month,
+        resolution=resolution,
+        wind_speed=wind_speed,
+    )
 
 
 def build_provisional_real_grid_bundle(
@@ -494,20 +568,17 @@ def build_provisional_real_grid_bundle(
     if not support_mask.any():
         raise RealDataLoadError("No supported Copernicus ocean cells were available for provisional inference.")
 
-    gy, gx = np.gradient(predicted_grid)
-    gradient_grid = np.sqrt((gy**2) + (gx**2))
-    predicted_grid = _smooth_spatial_grid(predicted_grid, support_mask, passes=2)
-    supported_predictions = predicted_grid[support_mask]
+    predicted_grid, residual_grid, gradient_grid = _residual_structure_grids(predicted_grid, support_mask)
+    supported_residuals = residual_grid[support_mask]
     supported_gradients = gradient_grid[support_mask]
-    predicted_mean = float(np.nanmean(supported_predictions))
-    predicted_std = float(np.nanstd(supported_predictions))
-    deviation_scale = max(predicted_std, 0.2)
+    residual_scale = max(float(np.nanstd(supported_residuals)), 0.12)
     gradient_scale = max(float(np.nanstd(supported_gradients)), 0.08)
     current_u_grid = feature_grid[2] * 3.0
     current_v_grid = feature_grid[3] * 3.0
     current_speed_grid = np.sqrt((current_u_grid**2) + (current_v_grid**2))
     convergence_grid = _current_convergence_grid(current_u_grid, current_v_grid, support_mask)
-    deviation_grid = np.abs(predicted_grid - predicted_mean) / deviation_scale
+    support_density_grid = _support_density_grid(support_mask)
+    deviation_grid = np.abs(residual_grid) / residual_scale
     gradient_norm_grid = gradient_grid / gradient_scale
     route_signal_grid = (
         deviation_grid * 0.35
@@ -551,10 +622,25 @@ def build_provisional_real_grid_bundle(
             current_speed = float(current_speed_grid[i, j])
             convergence_score = float(convergence_grid[i, j])
             latitude_weight = _operational_latitude_weight(float(lat))
+            edge_weight = _edge_longitude_weight(float(lon), resolution)
+            coastal_weight = float(np.clip((support_density_grid[i, j] - 0.42) / 0.52, 0.0, 1.0))
+            operational_weight = latitude_weight * edge_weight * max(0.15, coastal_weight)
+            display_flux = float(np.clip(residual_grid[i, j], -2.5, 2.5))
+            display_signal = float(
+                max(
+                    0.0,
+                    (
+                        model_deviation * 0.65
+                        + gradient_strength * 0.55
+                        + convergence_score * 0.45
+                    )
+                    * operational_weight,
+                )
+            )
             weakening = max(
                 0.0,
                 ((model_deviation * 0.16) + (gradient_strength * 0.18) + (convergence_score * 0.42))
-                * latitude_weight,
+                * operational_weight,
             )
             route_priority = max(
                 0.0,
@@ -565,7 +651,7 @@ def build_provisional_real_grid_bundle(
                     + current_speed * 0.14
                     + (wind_default / 36.0)
                 )
-                * latitude_weight,
+                * operational_weight,
             )
             if not route_peak_mask[i, j]:
                 route_priority *= 0.16
@@ -577,11 +663,11 @@ def build_provisional_real_grid_bundle(
                     + convergence_score * 0.62
                     + current_speed * 0.02
                 )
-                * latitude_weight,
+                * operational_weight,
             )
             if not anomaly_peak_mask[i, j]:
                 anomaly_score *= 0.2
-            deviation_pct = round((model_deviation * 35.0 + gradient_strength * 45.0) * latitude_weight, 1)
+            deviation_pct = round((model_deviation * 35.0 + gradient_strength * 45.0) * operational_weight, 1)
             rows.append(
                 FluxPoint(
                     lat=float(lat),
@@ -597,6 +683,8 @@ def build_provisional_real_grid_bundle(
                     anomaly_score=round(anomaly_score, 4),
                     observed_flux=round(predicted_flux, 4),
                     predicted_flux=round(predicted_flux, 4),
+                    display_flux=round(display_flux, 4),
+                    display_signal=round(display_signal, 4),
                     weakening_score=round(weakening, 4),
                     route_priority=round(min(route_priority, 5.0), 4),
                     timestamp=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
@@ -687,8 +775,15 @@ def build_real_grid_bundle(
             support_mask[i, j] = (round(float(lat), 6), round(float(lon), 6)) in support_cells
     if not support_mask.any():
         raise RealDataLoadError(f"No supported Copernicus ocean cells were available for {target_month[0]}-{target_month[1]:02d}.")
-    gy, gx = np.gradient(predicted_grid)
-    gradient_grid = np.sqrt((gy**2) + (gx**2))
+    era_wind = _scalar_month_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
+    observed_flux = _build_observed_flux_grid_cached(
+        socat_url,
+        noaa_gml_url,
+        target_month[0],
+        target_month[1],
+        resolution,
+        round(float(era_wind), 4),
+    )
     if observed_flux:
         observed_pairs = [
             (predicted_grid[i, j], observed_flux[(round(float(lat_values[i]), 6), round(float(lon_values[j]), 6))])
@@ -706,22 +801,19 @@ def build_real_grid_bundle(
             obs_spread = max(float(np.std(observed_obs)), 1e-3)
             spread_scale = float(np.clip(obs_spread / pred_spread, 0.7, 1.4))
             predicted_grid = ((predicted_grid - pred_center) * spread_scale) + obs_center
-    predicted_grid = _smooth_spatial_grid(predicted_grid, support_mask, passes=2)
-    supported_predictions = predicted_grid[support_mask]
+    predicted_grid, residual_grid, gradient_grid = _residual_structure_grids(predicted_grid, support_mask)
+    supported_residuals = residual_grid[support_mask]
     supported_gradients = gradient_grid[support_mask]
-    predicted_mean = float(np.nanmean(supported_predictions))
-    predicted_std = float(np.nanstd(supported_predictions))
-    deviation_scale = max(predicted_std, 0.2)
+    residual_scale = max(float(np.nanstd(supported_residuals)), 0.12)
     gradient_scale = max(float(np.nanstd(supported_gradients)), 0.08)
 
-    era_wind = _scalar_month_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
-    observed_flux = _build_observed_flux_grid(socat_url, atmospheric, target_month, resolution, era_wind)
     target_features = monthly_features[target_month]
     current_u_grid = target_features[2] * 3.0
     current_v_grid = target_features[3] * 3.0
     current_speed_grid = np.sqrt((current_u_grid**2) + (current_v_grid**2))
     convergence_grid = _current_convergence_grid(current_u_grid, current_v_grid, support_mask)
-    deviation_grid = np.abs(predicted_grid - predicted_mean) / deviation_scale
+    support_density_grid = _support_density_grid(support_mask)
+    deviation_grid = np.abs(residual_grid) / residual_scale
     gradient_norm_grid = gradient_grid / gradient_scale
     observed_gap_grid = np.zeros_like(predicted_grid, dtype=np.float32)
     for i, lat in enumerate(lat_values):
@@ -779,7 +871,10 @@ def build_real_grid_bundle(
             model_deviation = float(deviation_grid[i, j])
             gradient_strength = float(gradient_norm_grid[i, j])
             latitude_weight = _operational_latitude_weight(float(lat))
-            weakening = max(observed_gap, model_deviation * 0.35) * latitude_weight
+            edge_weight = _edge_longitude_weight(float(lon), resolution)
+            coastal_weight = float(np.clip((support_density_grid[i, j] - 0.42) / 0.52, 0.0, 1.0))
+            operational_weight = latitude_weight * edge_weight * max(0.15, coastal_weight)
+            weakening = max(observed_gap, model_deviation * 0.35) * operational_weight
             current_u = float(current_u_grid[i, j])
             current_v = float(current_v_grid[i, j])
             current_speed = float(current_speed_grid[i, j])
@@ -794,7 +889,7 @@ def build_real_grid_bundle(
                     + current_speed * 0.1
                     + (era_wind / 40.0)
                 )
-                * latitude_weight,
+                * operational_weight,
             )
             if not route_peak_mask[i, j]:
                 route_priority *= 0.14
@@ -807,17 +902,30 @@ def build_real_grid_bundle(
                     + convergence_score * 0.46
                     + current_speed * 0.02
                 )
-                * latitude_weight,
+                * operational_weight,
             )
             if not anomaly_peak_mask[i, j]:
                 anomaly_score *= 0.2
+            display_flux = float(np.clip(residual_grid[i, j], -2.5, 2.5))
+            display_signal = float(
+                max(
+                    0.0,
+                    (
+                        observed_gap * 0.85
+                        + model_deviation * 0.45
+                        + gradient_strength * 0.42
+                        + convergence_score * 0.35
+                    )
+                    * operational_weight,
+                )
+            )
             deviation_pct = round(
                 (
                     (observed_gap / max(abs(predicted_flux), 0.25)) * 100.0
                     + model_deviation * 28.0
                     + gradient_strength * 30.0
                 )
-                * latitude_weight,
+                * operational_weight,
                 1,
             )
             rows.append(
@@ -835,6 +943,8 @@ def build_real_grid_bundle(
                     anomaly_score=round(anomaly_score, 4),
                     observed_flux=round(observed_value, 4),
                     predicted_flux=round(predicted_flux, 4),
+                    display_flux=round(display_flux, 4),
+                    display_signal=round(display_signal, 4),
                     weakening_score=round(weakening, 4),
                     route_priority=round(min(route_priority, 5.0), 4),
                     timestamp=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),

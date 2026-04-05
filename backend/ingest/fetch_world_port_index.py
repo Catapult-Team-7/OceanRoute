@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import hypot
 from typing import Any
 
 import requests
+import urllib3
 
 
 DEFAULT_WORLD_PORT_INDEX_URL = (
     "https://vcps.nga.mil/nauticalpubs-feature/rest/services/WPI/World_Port_Index_Viewer/FeatureServer/0"
 )
+DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 @dataclass
@@ -77,30 +82,39 @@ def fetch_world_ports(
     min_lon: float | None = None,
     max_lon: float | None = None,
     limit: int = 100,
+    offset: int = 0,
     timeout: int = 25,
 ) -> list[PortRecord]:
     query_url = feature_service_url.rstrip("/") + "/query"
     where = "1=1"
     if None not in {min_lat, max_lat, min_lon, max_lon}:
-      where = (
+        where = (
             f"LATITUDE >= {min_lat} AND LATITUDE <= {max_lat} AND "
             f"LONGITUDE >= {min_lon} AND LONGITUDE <= {max_lon}"
         )
 
-    response = requests.get(
-        query_url,
-        params={
-            "where": where,
-            "outFields": "*",
-            "returnGeometry": "true",
-            "f": "json",
-            "resultRecordCount": max(1, min(limit, 500)),
-        },
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    def _query(payload_where: str) -> dict:
+        response = requests.get(
+            query_url,
+            params={
+                "where": payload_where,
+                "outFields": "*",
+                "returnGeometry": "true",
+                "f": "json",
+                "resultRecordCount": max(1, min(limit, 500)),
+                "resultOffset": max(0, int(offset)),
+            },
+            timeout=timeout,
+            verify=False,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    payload = _query(where)
     features = payload.get("features", [])
+    if not features and where != "1=1":
+        payload = _query("1=1")
+        features = payload.get("features", [])
 
     ports: list[PortRecord] = []
     for feature in features:
@@ -122,6 +136,95 @@ def fetch_world_ports(
     return ports
 
 
+@lru_cache(maxsize=128)
+def _fetch_osm_nearby_ports_cached(
+    *,
+    lat: float,
+    lon: float,
+    radius_m: int = 900000,
+    timeout: int = 30,
+    overpass_url: str = DEFAULT_OVERPASS_URL,
+) -> list[PortRecord]:
+    query = f"""
+    [out:json][timeout:{max(10, timeout)}];
+    (
+      node(around:{radius_m},{lat},{lon})["harbour"];
+      node(around:{radius_m},{lat},{lon})["seamark:type"="harbour"];
+      node(around:{radius_m},{lat},{lon})["landuse"="port"];
+      node(around:{radius_m},{lat},{lon})["industrial"="port"];
+      way(around:{radius_m},{lat},{lon})["harbour"];
+      way(around:{radius_m},{lat},{lon})["seamark:type"="harbour"];
+      way(around:{radius_m},{lat},{lon})["landuse"="port"];
+      way(around:{radius_m},{lat},{lon})["industrial"="port"];
+      relation(around:{radius_m},{lat},{lon})["harbour"];
+      relation(around:{radius_m},{lat},{lon})["seamark:type"="harbour"];
+      relation(around:{radius_m},{lat},{lon})["landuse"="port"];
+      relation(around:{radius_m},{lat},{lon})["industrial"="port"];
+    );
+    out center tags;
+    """
+    response = requests.post(
+        overpass_url,
+        data=query,
+        timeout=timeout,
+        headers={"Accept": "application/json"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    elements = payload.get("elements", [])
+    ports: list[PortRecord] = []
+    for element in elements:
+        tags = element.get("tags") or {}
+        port_lat = _extract_number(element.get("lat"))
+        port_lon = _extract_number(element.get("lon"))
+        center = element.get("center") or {}
+        if port_lat is None:
+            port_lat = _extract_number(center.get("lat"))
+        if port_lon is None:
+            port_lon = _extract_number(center.get("lon"))
+        if port_lat is None or port_lon is None:
+            continue
+        name = tags.get("name") or tags.get("seamark:name") or tags.get("name:en") or tags.get("operator")
+        if not name:
+            continue
+        ports.append(
+            PortRecord(
+                name=str(name),
+                country=tags.get("addr:country") or tags.get("country"),
+                lat=float(port_lat),
+                lon=float(port_lon),
+                harbor_type=tags.get("harbour") or tags.get("seamark:type"),
+                source="osm_overpass_port",
+            )
+        )
+    unique: dict[tuple[str, float, float], PortRecord] = {}
+    for port in ports:
+        key = (port.name, round(port.lat, 4), round(port.lon, 4))
+        unique[key] = port
+    return tuple(unique.values())
+
+
+def fetch_osm_nearby_ports(
+    *,
+    lat: float,
+    lon: float,
+    radius_m: int = 900000,
+    timeout: int = 30,
+    overpass_url: str = DEFAULT_OVERPASS_URL,
+) -> list[PortRecord]:
+    rounded_lat = round(float(lat), 2)
+    rounded_lon = round(float(lon), 2)
+    return list(
+        _fetch_osm_nearby_ports_cached(
+            lat=rounded_lat,
+            lon=rounded_lon,
+            radius_m=radius_m,
+            timeout=timeout,
+            overpass_url=overpass_url,
+        )
+    )
+
+
 def nearest_port(
     lat: float,
     lon: float,
@@ -130,4 +233,8 @@ def nearest_port(
 ) -> PortRecord | None:
     if not ports:
         return None
-    return min(ports, key=lambda port: hypot((port.lat - lat) / 8, (port.lon - lon) / 10))
+    def wrapped_lon_delta(port_lon: float, target_lon: float) -> float:
+        delta = abs(port_lon - target_lon)
+        return min(delta, abs(delta - 360.0))
+
+    return min(ports, key=lambda port: hypot((port.lat - lat) / 8, wrapped_lon_delta(port.lon, lon) / 10))

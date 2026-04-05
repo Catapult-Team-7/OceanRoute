@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import math
+import time
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 
 from db.database import get_repo
 from db.demo_data import DemoOceanRepository, REGION_BOUNDS
@@ -12,6 +15,9 @@ from ingest.fetch_trash import TrashDataError, load_trash_observations
 from ingest.fetch_world_port_index import DEFAULT_WORLD_PORT_INDEX_URL, fetch_world_ports, nearest_port
 
 router = APIRouter()
+_TRASH_RESPONSE_CACHE: dict[tuple, tuple[float, TrashResponse]] = {}
+_TRASH_RESPONSE_TTL_SECONDS = 45.0
+_PORT_CACHE: dict[tuple, tuple] = {}
 
 
 def _region_bounds(region: str) -> tuple[float, float, float, float]:
@@ -71,9 +77,9 @@ def _advect_with_currents(lat: float, lon: float, current_u: float | None, curre
 def _advance_transport_step(row) -> tuple[float, float]:
     eastward = float(getattr(row, "current_u", 0.0) or 0.0)
     northward = float(getattr(row, "current_v", 0.0) or 0.0)
-    lat_shift = max(-2.0, min(2.0, northward * 1.4))
+    lat_shift = max(-4.0, min(4.0, northward * 3.2))
     lon_scale = max(0.35, abs(math.cos(math.radians(row.lat))))
-    lon_shift = max(-3.0, min(3.0, (eastward * 2.2) / lon_scale))
+    lon_shift = max(-6.0, min(6.0, (eastward * 4.6) / lon_scale))
     next_lat = max(-84.0, min(84.0, row.lat + lat_shift))
     next_lon = _normalize_lon(row.lon + lon_shift)
     return next_lat, next_lon
@@ -121,15 +127,23 @@ def _nearest_supported_row(lat_values, lon_values, lookup, lat: float, lon: floa
 def _trace_transport_path(seed_row, lat_values, lon_values, lookup, steps: int = 6):
     current_row = seed_row
     path = [(seed_row.lon, seed_row.lat)]
+    position_lat = float(seed_row.lat)
+    position_lon = float(seed_row.lon)
     for _ in range(steps):
-        next_lat, next_lon = _advance_transport_step(current_row)
-        next_row = _nearest_supported_row(lat_values, lon_values, lookup, next_lat, next_lon)
-        if next_row is None:
+        next_lat, next_lon = _advect_with_currents(
+            position_lat,
+            position_lon,
+            getattr(current_row, "current_u", None),
+            getattr(current_row, "current_v", None),
+        )
+        if _distance_score(next_lat, next_lon, position_lat, position_lon) < 0.2:
             break
-        if _distance_score(next_row.lat, next_row.lon, current_row.lat, current_row.lon) < 0.25:
-            break
-        path.append((next_row.lon, next_row.lat))
-        current_row = next_row
+        position_lat = next_lat
+        position_lon = next_lon
+        path.append((position_lon, position_lat))
+        next_row = _nearest_supported_row(lat_values, lon_values, lookup, position_lat, position_lon)
+        if next_row is not None and _distance_score(next_row.lat, next_row.lon, current_row.lat, current_row.lon) >= 0.1:
+            current_row = next_row
     return current_row, path
 
 
@@ -139,6 +153,7 @@ def _predicted_trash_hotspots(
     region: str,
     limit: int,
     ports: list,
+    port_url: str,
     observed_items: list[dict] | None = None,
 ) -> list[TrashHotspot]:
     observed_items = observed_items or []
@@ -229,7 +244,13 @@ def _predicted_trash_hotspots(
         endpoint_row = candidate["row"]
         hotspot_lat = endpoint_row.lat
         hotspot_lon = endpoint_row.lon
-        port = nearest_port(hotspot_lat, hotspot_lon, ports=ports) if ports else None
+        port = _resolve_route_port(
+            port_url,
+            ports,
+            hotspot_lat,
+            hotspot_lon,
+            live_fallback=False,
+        )
         cross_check = None
         if observed_items:
             nearest_observed = min(
@@ -258,7 +279,7 @@ def _predicted_trash_hotspots(
                 source="ml_predicted_trash_transport",
                 nearest_port=(
                     PortHint(
-                        name=port.name,
+                        name=port.name if port.name and port.name != "Unknown port" else "Nearest recovery port",
                         lat=port.lat,
                         lon=port.lon,
                         country=port.country,
@@ -284,12 +305,63 @@ def _predicted_trash_hotspots(
     return hotspots
 
 
-@router.get("/trash", response_model=TrashResponse)
-async def trash_hotspots(
-    region: str = Query(default="global", pattern="^(global|pacific|atlantic|indian)$"),
-    limit: int = Query(default=25, ge=1, le=200),
-    repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
-):
+def _fetch_ports_cached(
+    port_url: str,
+    min_lat: float,
+    max_lat: float,
+    min_lon: float,
+    max_lon: float,
+) -> tuple:
+    cache_key = (port_url, round(min_lat, 2), round(max_lat, 2), round(min_lon, 2), round(max_lon, 2))
+    cached = _PORT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    ports = []
+    source_url = port_url if "FeatureServer" in port_url else DEFAULT_WORLD_PORT_INDEX_URL
+    query_min_lon = min_lon if min_lon <= max_lon else -180
+    query_max_lon = max_lon if min_lon <= max_lon else 180
+    try:
+        ports = fetch_world_ports(
+            feature_service_url=source_url,
+            min_lat=min_lat,
+            max_lat=max_lat,
+            min_lon=query_min_lon,
+            max_lon=query_max_lon,
+            limit=80,
+            timeout=10,
+        )
+    except Exception:
+        ports = []
+    if ports:
+        _PORT_CACHE[cache_key] = tuple(ports)
+    return tuple(ports)
+
+
+def _resolve_route_port(port_url: str, global_ports: list, lat: float, lon: float, *, live_fallback: bool = False):
+    best_port = nearest_port(lat, lon, ports=global_ports) if global_ports else None
+    if best_port is not None:
+        lon_delta = min(abs(best_port.lon - lon), abs(abs(best_port.lon - lon) - 360.0))
+        if math.hypot((best_port.lat - lat) / 8.0, lon_delta / 10.0) <= 24.0:
+            return best_port
+    if not live_fallback:
+        return best_port
+    for radius_m in (450_000, 900_000, 1_500_000):
+        try:
+            nearby_ports = fetch_osm_nearby_ports(lat=lat, lon=lon, radius_m=radius_m, timeout=12)
+        except Exception:
+            continue
+        if nearby_ports:
+            return nearest_port(lat, lon, ports=nearby_ports)
+    return best_port
+
+
+def _build_trash_response(repo: DemoOceanRepository, region: str, limit: int) -> TrashResponse:
+    cache_key = ("trash", region, limit, *repo._checkpoint_cache_token())
+    cached = _TRASH_RESPONSE_CACHE.get(cache_key)
+    now_ts = time.time()
+    if cached and now_ts - cached[0] <= _TRASH_RESPONSE_TTL_SECONDS:
+        return cached[1]
+
     data_url, source_name = _trash_data_url(repo)
     min_lat, max_lat, min_lon, max_lon = _region_bounds(region)
     items: list[dict] = []
@@ -314,24 +386,29 @@ async def trash_hotspots(
 
     port_config = repo.trainer._config_by_id("world_port_index") or {}
     port_url = str(port_config.get("notes", "")).strip() or str(port_config.get("url", "")).strip() or DEFAULT_WORLD_PORT_INDEX_URL
-    ports = []
-    try:
-        ports = fetch_world_ports(
-            feature_service_url=port_url if "FeatureServer" in port_url else DEFAULT_WORLD_PORT_INDEX_URL,
-            min_lat=min_lat,
-            max_lat=max_lat,
-            min_lon=min_lon if min_lon <= max_lon else -180,
-            max_lon=max_lon if min_lon <= max_lon else 180,
-            limit=250,
-        )
-    except Exception:
-        ports = []
-
-    hotspots = _predicted_trash_hotspots(repo, region=region, limit=limit, ports=ports, observed_items=filtered)
-
-    return TrashResponse(
+    ports = list(_fetch_ports_cached(port_url, min_lat, max_lat, min_lon, max_lon))
+    hotspots = _predicted_trash_hotspots(
+        repo,
+        region=region,
+        limit=limit,
+        ports=ports,
+        port_url=port_url,
+        observed_items=filtered,
+    )
+    response = TrashResponse(
         source="ml_predicted_trash_transport",
         observed=bool(filtered),
         source_summary=observed_summary,
         hotspots=hotspots,
     )
+    _TRASH_RESPONSE_CACHE[cache_key] = (now_ts, response)
+    return response
+
+
+@router.get("/trash", response_model=TrashResponse)
+async def trash_hotspots(
+    region: str = Query(default="global", pattern="^(global|pacific|atlantic|indian)$"),
+    limit: int = Query(default=25, ge=1, le=200),
+    repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
+):
+    return await run_in_threadpool(_build_trash_response, repo, region, limit)

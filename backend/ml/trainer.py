@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from pipeline.artifacts import write_data_manifest, write_training_manifest
+from pipeline.artifacts import read_json, training_manifest_path, write_data_manifest, write_training_manifest
 from ingest.fetch_copernicus import (
     CopernicusSyncError,
     default_copernicus_directory,
@@ -267,8 +269,9 @@ class MLTrainerService:
         self.repo = repo
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._process: subprocess.Popen | None = None
         self.state = TrainingState(
-            config={"epochs": 24, "learning_rate": 0.005, "month_window": 12, "resolution": "2deg"},
+            config={"epochs": 10, "learning_rate": 0.005, "month_window": 12, "resolution": "2deg"},
             
             model_summary={
                 "mode": "real_monthly_convlstm",
@@ -321,6 +324,7 @@ class MLTrainerService:
                 configured["notes"] = DEFAULT_COPERNICUS_NOTES
             self.api_registry.append(configured)
         self._bootstrap_from_checkpoint()
+        self._refresh_state_from_manifest()
 
     def _bootstrap_from_checkpoint(self):
         checkpoint_path = LATEST_CHECKPOINT_PATH
@@ -359,9 +363,76 @@ class MLTrainerService:
     def list_required_apis(self):
         return [dict(item) for item in self.api_registry]
 
+    def _training_command(self, config: dict) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "pipeline.train_job",
+            "--epochs",
+            str(int(config["epochs"])),
+            "--learning-rate",
+            str(float(config["learning_rate"])),
+            "--month-window",
+            str(int(config["month_window"])),
+            "--resolution",
+            str(config["resolution"]),
+            *(["--quick-test"] if config.get("quick_test") else []),
+        ]
+
+    def _refresh_state_from_manifest(self):
+        manifest = read_json(training_manifest_path())
+        if not manifest:
+            return
+
+        metrics = dict(self.state.metrics)
+        metrics.update(manifest.get("metrics", {}))
+        if self._process and self._process.poll() is None and manifest.get("status") == "running":
+            metrics.setdefault("stage", "running")
+            metrics.setdefault("detail", "Background training process is active.")
+
+        self.state.status = manifest.get("status", self.state.status)
+        self.state.run_id = int(manifest.get("run_id", self.state.run_id or 0))
+        self.state.started_at = manifest.get("started_at", self.state.started_at)
+        self.state.finished_at = manifest.get("finished_at", self.state.finished_at)
+        self.state.current_epoch = int(manifest.get("current_epoch", self.state.current_epoch or 0))
+        self.state.total_epochs = int(manifest.get("total_epochs", self.state.total_epochs or 0))
+        if self.state.total_epochs:
+            self.state.progress = max(self.state.progress, self.state.current_epoch / max(self.state.total_epochs, 1))
+        self.state.config = {**self.state.config, **manifest.get("config", {})}
+        self.state.metrics = metrics
+        self.state.error = manifest.get("error", self.state.error)
+        self.state.data_summary = {
+            **self.state.data_summary,
+            **manifest.get("data_summary", {}),
+        }
+        self.state.model_summary = {
+            **self.state.model_summary,
+            **manifest.get("model_summary", {}),
+        }
+        checkpoint_path = manifest.get("checkpoint_path")
+        if checkpoint_path:
+            self.state.model_summary["checkpoint_path"] = checkpoint_path
+            self.state.model_ready = Path(checkpoint_path).exists()
+        elif manifest.get("status") == "completed":
+            self.state.model_ready = bool(self.state.model_summary.get("checkpoint_path"))
+
+        if self._process and self._process.poll() is not None:
+            return_code = self._process.returncode
+            self.state.metrics = {
+                **self.state.metrics,
+                "process_returncode": return_code,
+            }
+            if manifest.get("status") == "running":
+                if return_code == 0:
+                    self.state.status = "completed"
+                    self.state.finished_at = datetime.now(timezone.utc).isoformat()
+                else:
+                    self.state.status = "failed"
+                    self.state.error = self.state.error or f"Training subprocess exited with code {return_code}."
+
     def _merge_training_config(self, config: dict | None = None) -> dict:
         return {
-            "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 24))),
+            "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 10))),
             "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.005))),
             "month_window": int((config or {}).get("month_window", self.state.config.get("month_window", 12))),
             "resolution": str((config or {}).get("resolution", self.state.config.get("resolution", "2deg"))),
@@ -438,6 +509,7 @@ class MLTrainerService:
 
     def get_status(self):
         with self._lock:
+            self._refresh_state_from_manifest()
             return self.state.snapshot()
 
     def expected_month_window(self) -> int:
@@ -555,12 +627,26 @@ class MLTrainerService:
 
     def start_training(self, config: dict | None = None):
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            self._refresh_state_from_manifest()
+            if self._process and self._process.poll() is None:
                 return self.state.snapshot(), False
             merged_config = self._merge_training_config(config)
             self._initialize_training_state(merged_config)
-            self._thread = threading.Thread(target=self._train_loop, args=(merged_config,), daemon=True)
-            self._thread.start()
+            command = self._training_command(merged_config)
+            self._process = subprocess.Popen(
+                command,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.state.metrics = {
+                **self.state.metrics,
+                "stage": "queued",
+                "detail": "Training subprocess launched.",
+                "training_command": " ".join(command),
+                "pid": self._process.pid,
+            }
             return self.state.snapshot(), True
 
     def run_training_job(self, config: dict | None = None):

@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 class TrainingConfig(BaseModel):
-    epochs: int = Field(default=24, ge=5, le=200)
+    epochs: int = Field(default=10, ge=5, le=200)
     learning_rate: float = Field(default=0.005, gt=0.0001, le=1.0)
     month_window: int = Field(default=12, ge=3, le=24)
     resolution: str = Field(default="2deg")
@@ -38,7 +38,7 @@ class PublishConfig(BaseModel):
 
 
 class PrepareConfig(BaseModel):
-    epochs: int = Field(default=24, ge=5, le=400)
+    epochs: int = Field(default=10, ge=5, le=400)
     learning_rate: float = Field(default=0.005, gt=0.00001, le=1.0)
     month_window: int = Field(default=12, ge=3, le=24)
     resolution: str = Field(default="2deg")

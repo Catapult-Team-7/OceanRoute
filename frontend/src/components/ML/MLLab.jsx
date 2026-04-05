@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
@@ -6,7 +6,7 @@ import { HACKATHON_API_DEFAULTS } from "../../utils/demoMissionData";
 import { fetchJson } from "../../utils/fetchJson";
 
 const DEFAULT_FORM = {
-  epochs: 24,
+  epochs: 10,
   learning_rate: 0.005,
   month_window: 12,
   resolution: "2deg",
@@ -15,8 +15,8 @@ const DEFAULT_FORM = {
 
 const MODEL_LIMITS = [
   {
-    title: "Labels are still sparse",
-    copy: "The ConvLSTM now trains on monthly aligned tensors, but target coverage still depends on where SOCAT observations exist.",
+    title: "Dense targets are proxy-calibrated",
+    copy: "The ConvLSTM now trains on global gridded targets built from Copernicus, ERA5, and NOAA, then anchored back to SOCAT observations where they exist.",
   },
   {
     title: "Biogeochemical drivers are incomplete",
@@ -40,6 +40,7 @@ const NEXT_DATASETS = [
 const API_LABEL = API_BASE || "current app origin";
 
 export default function MLLab() {
+  const lastHealthyAtRef = useRef(0);
   const [status, setStatus] = useState(null);
   const [artifacts, setArtifacts] = useState(null);
   const [apiDrafts, setApiDrafts] = useState([]);
@@ -59,19 +60,23 @@ export default function MLLab() {
 
   async function checkBackendHealth() {
     try {
-      const data = await fetchJson(`${API_BASE}/health`, { timeoutMs: 3500 });
+      await fetchJson(`${API_BASE}/health`, { timeoutMs: 15000 });
+      lastHealthyAtRef.current = Date.now();
       const nextHealth = {
-        reachable: data.status === "ok",
+        reachable: true,
         checked: true,
-        detail: data.status === "ok" ? `Backend reachable at ${API_LABEL}` : `Unexpected health response from ${API_LABEL}`,
+        detail: `Backend reachable at ${API_LABEL}`,
       };
       setBackendHealth(nextHealth);
       return nextHealth;
     } catch (error) {
+      const recentlyHealthy = Date.now() - lastHealthyAtRef.current < 60000;
       const nextHealth = {
-        reachable: false,
+        reachable: recentlyHealthy,
         checked: true,
-        detail: `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
+        detail: recentlyHealthy
+          ? `Backend is busy at ${API_LABEL}; waiting for it to respond.`
+          : `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
       };
       setBackendHealth(nextHealth);
       return nextHealth;
@@ -79,69 +84,100 @@ export default function MLLab() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadHealth() {
-      const health = await checkBackendHealth();
-      if (cancelled) return;
-      setBackendHealth(health);
-    }
-
-    loadHealth();
-    return () => {
-      cancelled = true;
-    };
+    checkBackendHealth();
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
 
     async function loadArtifacts() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/artifacts`);
-        const data = await response.json();
-        if (!cancelled) setArtifacts(data);
+        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setArtifacts(data);
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: status?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
       } catch (error) {
         console.error("Failed to load ML artifacts", error);
+        if (!cancelled && Date.now() - lastHealthyAtRef.current < 60000) {
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: `Backend is busy at ${API_LABEL}; waiting for artifact refresh.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(loadArtifacts, status?.status === "running" ? 12000 : 20000);
+        }
       }
     }
 
     loadArtifacts();
-    const interval = window.setInterval(loadArtifacts, 4000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [status?.status]);
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
 
     async function loadStatus() {
       try {
-        const statusResponse = await fetch(`${API_BASE}/api/ml/status`);
-        const statusData = await statusResponse.json();
-        if (!cancelled) setStatus(statusData);
+        const statusData = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setStatus(statusData);
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: statusData?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
       } catch (error) {
         console.error("Failed to load ML status", error);
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: Date.now() - lastHealthyAtRef.current < 60000,
+            checked: true,
+            detail:
+              Date.now() - lastHealthyAtRef.current < 60000
+                ? `Backend is busy at ${API_LABEL}; waiting for status refresh.`
+                : `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(loadStatus, status?.status === "running" ? 4000 : 8000);
+        }
       }
     }
 
     loadStatus();
-    const interval = window.setInterval(loadStatus, 1200);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [status?.status]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadApis() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/apis`);
-        const data = await response.json();
+        const data = await fetchJson(`${API_BASE}/api/ml/apis`, { timeoutMs: 15000 });
         if (!cancelled) {
           setApiDrafts(data.apis?.length ? data.apis : HACKATHON_API_DEFAULTS);
         }
