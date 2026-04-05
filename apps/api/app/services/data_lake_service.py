@@ -12,7 +12,7 @@ import pandas as pd
 from app.config import settings
 from app.schemas import BaselineArtifact, DatasetArtifact, ForecastStep, GridSpec, PredictionArtifact
 from app.services.artifact_service import ensure_data_directories
-from app.services.tensor_grid_service import static_region_masks, tensorize_cell_values
+from app.services.tensor_grid_service import build_region_grid_spec, static_region_masks, tensorize_cell_values
 
 try:  # pragma: no cover - optional dependency
     import zarr
@@ -25,6 +25,9 @@ except Exception:  # pragma: no cover - optional dependency
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_STATIC_MASK_CACHE: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
 def _month_bucket(timestamp: datetime) -> tuple[str, str]:
@@ -154,16 +157,57 @@ def append_monthly_index(index_family: str, timestamp: datetime, region_id: str,
     return _write_table(index_path, rows)
 
 
-def write_static_masks(region_id: str) -> dict[str, str]:
-    grid_spec, shoreline, restricted, bathymetry = static_region_masks(region_id)
-    year, month = _month_bucket(_now())
+def _existing_tensor_path(path: Path) -> str | None:
+    zarr_path = path.with_suffix(".zarr")
+    npy_path = path.with_suffix(".npy")
+    if zarr_path.exists():
+        return str(zarr_path)
+    if npy_path.exists():
+        return str(npy_path)
+    return None
+
+
+def _read_existing_table_rows(path: Path) -> list[dict[str, Any]]:
+    if path.exists():
+        try:
+            return pd.read_parquet(path).to_dict(orient="records")
+        except Exception:
+            fallback_json = path.with_suffix(".json")
+            if fallback_json.exists():
+                return json.loads(fallback_json.read_text(encoding="utf-8"))
+    return []
+
+
+def write_static_masks(region_id: str, *, timestamp: datetime | None = None) -> dict[str, Any]:
+    bucket_time = timestamp or _now()
+    year, month = _month_bucket(bucket_time)
+    cache_key = (region_id, year, month)
+    cached = _STATIC_MASK_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
     base = _safe_path("features", "static", region_id, year, month)
-    return {
+    shoreline_uri = _existing_tensor_path(base / "shoreline_mask")
+    restricted_uri = _existing_tensor_path(base / "restricted_mask")
+    bathymetry_uri = _existing_tensor_path(base / "bathymetry_mask")
+    grid_spec = build_region_grid_spec(region_id)
+    if shoreline_uri and restricted_uri and bathymetry_uri:
+        payload = {
+            "shoreline_mask_uri": shoreline_uri,
+            "restricted_mask_uri": restricted_uri,
+            "bathymetry_mask_uri": bathymetry_uri,
+            "grid_spec": json.loads(grid_spec.model_dump_json()),
+        }
+        _STATIC_MASK_CACHE[cache_key] = payload
+        return dict(payload)
+    grid_spec, shoreline, restricted, bathymetry = static_region_masks(region_id)
+    payload = {
         "shoreline_mask_uri": _write_tensor(base / "shoreline_mask", shoreline),
         "restricted_mask_uri": _write_tensor(base / "restricted_mask", restricted),
         "bathymetry_mask_uri": _write_tensor(base / "bathymetry_mask", bathymetry),
         "grid_spec": json.loads(grid_spec.model_dump_json()),
     }
+    _STATIC_MASK_CACHE[cache_key] = payload
+    return dict(payload)
 
 
 def write_baseline_tensors(
@@ -195,7 +239,7 @@ def write_baseline_tensors(
     _, stokes_u_tensor, _ = tensorize_cell_values(region_id, stokes_u_by_cell)
     _, stokes_v_tensor, _ = tensorize_cell_values(region_id, stokes_v_by_cell)
     stokes_magnitude = np.sqrt((stokes_u_tensor**2) + (stokes_v_tensor**2)).astype(np.float32)
-    masks = write_static_masks(region_id)
+    masks = write_static_masks(region_id, timestamp=generated_at)
     grid_spec.shoreline_mask_uri = masks["shoreline_mask_uri"]
     grid_spec.restricted_mask_uri = masks["restricted_mask_uri"]
     grid_spec.bathymetry_mask_uri = masks["bathymetry_mask_uri"]
@@ -245,6 +289,59 @@ def write_baseline_manifest(artifact: BaselineArtifact) -> BaselineArtifact:
     }
     parquet_index_uri = append_monthly_index("baseline", artifact.generated_at, artifact.region_id, parquet_row)
     return artifact.model_copy(update={"manifest_uri": manifest_uri, "parquet_index_uri": parquet_index_uri})
+
+
+def write_baseline_manifests(artifacts: list[BaselineArtifact]) -> list[BaselineArtifact]:
+    if not artifacts:
+        return []
+    updated_artifacts: dict[str, BaselineArtifact] = {}
+    grouped_rows: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    grouped_paths: dict[tuple[str, str, str], Path] = {}
+
+    for artifact in artifacts:
+        year, month = _month_bucket(artifact.generated_at)
+        manifest_path = _safe_path("manifests", "baseline", artifact.region_id, year, month, f"{artifact.artifact_id}.json")
+        manifest_uri = _write_json(manifest_path, artifact.model_dump(mode="json"))
+        key = (artifact.region_id, year, month)
+        grouped_paths[key] = _safe_path("indexes", "baseline", artifact.region_id, year, f"{month}.parquet")
+        grouped_rows.setdefault(key, []).append(
+            {
+                "artifact_id": artifact.artifact_id,
+                "region_id": artifact.region_id,
+                "run_id": artifact.run_id,
+                "debris_class": artifact.debris_class,
+                "generated_at": artifact.generated_at.isoformat(),
+                "forecast_valid_at": artifact.forecast_valid_at.isoformat(),
+                "horizon_hour": artifact.horizon_hour,
+                "baseline_engine": artifact.baseline_engine,
+                "source_mode_used": artifact.source_mode_used,
+                "manifest_uri": manifest_uri,
+                "density_uri": artifact.density_uri,
+                "current_u_uri": artifact.current_u_uri,
+                "current_v_uri": artifact.current_v_uri,
+                "wind_u_uri": artifact.wind_u_uri,
+                "wind_v_uri": artifact.wind_v_uri,
+                "ensemble_spread_uri": artifact.ensemble_spread_uri,
+                "beaching_fraction_uri": artifact.beaching_fraction_uri,
+                "stokes_u_uri": artifact.stokes_u_uri,
+                "stokes_v_uri": artifact.stokes_v_uri,
+                "stokes_magnitude_uri": artifact.stokes_magnitude_uri,
+            }
+        )
+        updated_artifacts[artifact.artifact_id] = artifact.model_copy(update={"manifest_uri": manifest_uri})
+
+    parquet_index_uris: dict[tuple[str, str, str], str] = {}
+    for key, rows in grouped_rows.items():
+        index_path = grouped_paths[key]
+        existing_rows = _read_existing_table_rows(index_path)
+        parquet_index_uris[key] = _write_table(index_path, existing_rows + rows)
+
+    return [
+        updated_artifacts[artifact.artifact_id].model_copy(
+            update={"parquet_index_uri": parquet_index_uris[(artifact.region_id, *_month_bucket(artifact.generated_at))]}
+        )
+        for artifact in artifacts
+    ]
 
 
 def write_feature_snapshot(

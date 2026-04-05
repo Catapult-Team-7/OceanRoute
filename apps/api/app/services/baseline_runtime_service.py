@@ -48,9 +48,8 @@ def build_forcing_refs(region_name: str, *, source_mode_used: str) -> ForcingRef
     )
 
 
-def persist_baseline_artifact(
+def build_baseline_artifact(
     *,
-    db: Session,
     region_id: str,
     region_name: str,
     run_id: str,
@@ -85,73 +84,117 @@ def persist_baseline_artifact(
         stokes_u_by_cell={cell_id: values[0] for cell_id, values in diagnostics.stokes_drift.items()},
         stokes_v_by_cell={cell_id: values[1] for cell_id, values in diagnostics.stokes_drift.items()},
     )
+    return BaselineArtifact(
+        artifact_id=str(uuid4()),
+        region_id=region_id,
+        run_id=run_id,
+        debris_class=debris_class,  # type: ignore[arg-type]
+        generated_at=generated_at,
+        forecast_valid_at=forecast_valid_at,
+        horizon_hour=horizon_hour,
+        grid_spec=grid_spec,
+        forcing_refs=build_forcing_refs(region_name, source_mode_used=source_mode_used),
+        baseline_engine=baseline_engine,
+        source_mode_requested=source_mode_requested,  # type: ignore[arg-type]
+        source_mode_used=source_mode_used,  # type: ignore[arg-type]
+        is_fallback=is_fallback,
+        source_notes=source_notes,
+        density_uri=tensor_uris["density_uri"],
+        current_u_uri=tensor_uris["current_u_uri"],
+        current_v_uri=tensor_uris["current_v_uri"],
+        wind_u_uri=tensor_uris["wind_u_uri"],
+        wind_v_uri=tensor_uris["wind_v_uri"],
+        ensemble_spread_uri=tensor_uris["ensemble_spread_uri"],
+        beaching_fraction_uri=tensor_uris["beaching_fraction_uri"],
+        stokes_u_uri=tensor_uris["stokes_u_uri"],
+        stokes_v_uri=tensor_uris["stokes_v_uri"],
+        stokes_magnitude_uri=tensor_uris["stokes_magnitude_uri"],
+        manifest_uri="",
+        parquet_index_uri="",
+        metadata={
+            "cell_map": {key: [value[0], value[1]] for key, value in cell_map.items()},
+            "total_particles": diagnostics.total_particles,
+            "beached_particles": diagnostics.beached_particles,
+            "ensemble_members": diagnostics.ensemble_members,
+        },
+    )
+
+
+def baseline_artifact_to_model(artifact: BaselineArtifact) -> BaselineArtifactModel:
+    return BaselineArtifactModel(
+        artifact_id=artifact.artifact_id,
+        region_id=artifact.region_id,
+        run_id=artifact.run_id,
+        debris_class=artifact.debris_class,
+        generated_at=artifact.generated_at,
+        forecast_valid_at=artifact.forecast_valid_at,
+        horizon_hour=artifact.horizon_hour,
+        baseline_engine=artifact.baseline_engine,
+        source_mode_requested=artifact.source_mode_requested,
+        source_mode_used=artifact.source_mode_used,
+        is_fallback=artifact.is_fallback,
+        manifest_uri=artifact.manifest_uri,
+        parquet_index_uri=artifact.parquet_index_uri,
+        density_uri=artifact.density_uri,
+        current_u_uri=artifact.current_u_uri,
+        current_v_uri=artifact.current_v_uri,
+        wind_u_uri=artifact.wind_u_uri,
+        wind_v_uri=artifact.wind_v_uri,
+        ensemble_spread_uri=artifact.ensemble_spread_uri,
+        beaching_fraction_uri=artifact.beaching_fraction_uri,
+        stokes_u_uri=artifact.stokes_u_uri,
+        stokes_v_uri=artifact.stokes_v_uri,
+        stokes_magnitude_uri=artifact.stokes_magnitude_uri,
+        grid_spec_json=artifact.grid_spec.model_dump(mode="json"),
+        forcing_refs_json=artifact.forcing_refs.model_dump(mode="json"),
+        source_notes=list(artifact.source_notes),
+        metadata_json=artifact.metadata,
+    )
+
+
+def persist_baseline_artifact(
+    *,
+    db: Session,
+    region_id: str,
+    region_name: str,
+    run_id: str,
+    debris_class: str,
+    generated_at: datetime,
+    forecast_valid_at: datetime,
+    horizon_hour: int,
+    source_mode_requested: str,
+    source_mode_used: str,
+    is_fallback: bool,
+    source_notes: list[str],
+    baseline_engine: BaselineEngine,
+    current_u_by_cell: dict[str, float],
+    current_v_by_cell: dict[str, float],
+    wind_u_by_cell: dict[str, float],
+    wind_v_by_cell: dict[str, float],
+    diagnostics: DriftBaselineDiagnostics,
+) -> BaselineArtifact:
     artifact = write_baseline_manifest(
-        BaselineArtifact(
-            artifact_id=str(uuid4()),
+        build_baseline_artifact(
             region_id=region_id,
+            region_name=region_name,
             run_id=run_id,
-            debris_class=debris_class,  # type: ignore[arg-type]
+            debris_class=debris_class,
             generated_at=generated_at,
             forecast_valid_at=forecast_valid_at,
             horizon_hour=horizon_hour,
-            grid_spec=grid_spec,
-            forcing_refs=build_forcing_refs(region_name, source_mode_used=source_mode_used),
-            baseline_engine=baseline_engine,
-            source_mode_requested=source_mode_requested,  # type: ignore[arg-type]
-            source_mode_used=source_mode_used,  # type: ignore[arg-type]
+            source_mode_requested=source_mode_requested,
+            source_mode_used=source_mode_used,
             is_fallback=is_fallback,
             source_notes=source_notes,
-            density_uri=tensor_uris["density_uri"],
-            current_u_uri=tensor_uris["current_u_uri"],
-            current_v_uri=tensor_uris["current_v_uri"],
-            wind_u_uri=tensor_uris["wind_u_uri"],
-            wind_v_uri=tensor_uris["wind_v_uri"],
-            ensemble_spread_uri=tensor_uris["ensemble_spread_uri"],
-            beaching_fraction_uri=tensor_uris["beaching_fraction_uri"],
-            stokes_u_uri=tensor_uris["stokes_u_uri"],
-            stokes_v_uri=tensor_uris["stokes_v_uri"],
-            stokes_magnitude_uri=tensor_uris["stokes_magnitude_uri"],
-            manifest_uri="",
-            parquet_index_uri="",
-            metadata={
-                "cell_map": {key: [value[0], value[1]] for key, value in cell_map.items()},
-                "total_particles": diagnostics.total_particles,
-                "beached_particles": diagnostics.beached_particles,
-                "ensemble_members": diagnostics.ensemble_members,
-            },
+            baseline_engine=baseline_engine,
+            current_u_by_cell=current_u_by_cell,
+            current_v_by_cell=current_v_by_cell,
+            wind_u_by_cell=wind_u_by_cell,
+            wind_v_by_cell=wind_v_by_cell,
+            diagnostics=diagnostics,
         )
     )
-    db.add(
-        BaselineArtifactModel(
-            artifact_id=artifact.artifact_id,
-            region_id=artifact.region_id,
-            run_id=artifact.run_id,
-            debris_class=artifact.debris_class,
-            generated_at=artifact.generated_at,
-            forecast_valid_at=artifact.forecast_valid_at,
-            horizon_hour=artifact.horizon_hour,
-            baseline_engine=artifact.baseline_engine,
-            source_mode_requested=artifact.source_mode_requested,
-            source_mode_used=artifact.source_mode_used,
-            is_fallback=artifact.is_fallback,
-            manifest_uri=artifact.manifest_uri,
-            parquet_index_uri=artifact.parquet_index_uri,
-            density_uri=artifact.density_uri,
-            current_u_uri=artifact.current_u_uri,
-            current_v_uri=artifact.current_v_uri,
-            wind_u_uri=artifact.wind_u_uri,
-            wind_v_uri=artifact.wind_v_uri,
-            ensemble_spread_uri=artifact.ensemble_spread_uri,
-            beaching_fraction_uri=artifact.beaching_fraction_uri,
-            stokes_u_uri=artifact.stokes_u_uri,
-            stokes_v_uri=artifact.stokes_v_uri,
-            stokes_magnitude_uri=artifact.stokes_magnitude_uri,
-            grid_spec_json=artifact.grid_spec.model_dump(mode="json"),
-            forcing_refs_json=artifact.forcing_refs.model_dump(mode="json"),
-            source_notes=list(artifact.source_notes),
-            metadata_json=artifact.metadata,
-        )
-    )
+    db.add(baseline_artifact_to_model(artifact))
     return artifact
 
 

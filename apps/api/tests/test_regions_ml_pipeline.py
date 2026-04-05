@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
 
 def test_regions_endpoint_and_ml_training_pipeline(client) -> None:
     regions_response = client.get("/api/regions")
@@ -64,6 +69,7 @@ def test_regions_endpoint_and_ml_training_pipeline(client) -> None:
             "dataset_id": dataset_payload["dataset_id"],
             "architecture": "linear_residual",
             "activate": True,
+            "promote_policy": "always_activate",
         },
     )
     assert train_response.status_code == 200
@@ -98,22 +104,21 @@ def test_regions_endpoint_and_ml_training_pipeline(client) -> None:
     assert len(benchmark_payload["compared_strategies"]) == 3
 
 
-def test_sequence_architecture_request_is_rejected_until_sequence_trainer_exists(client) -> None:
-    forecast_response = client.post(
-        "/api/forecast/run",
+def test_small_sequence_training_stays_candidate_when_evaluation_data_is_too_small(client) -> None:
+    backfill_response = client.post(
+        "/api/forecast/backfill",
         json={
             "region_id": "sf_bay_estuary",
-            "horizon_hours": 24,
-            "debris_classes": ["low"],
-            "seed": 5,
             "source_mode": "sample",
+            "days": 8,
+            "debris_classes": ["low", "high"],
         },
     )
-    assert forecast_response.status_code == 200
+    assert backfill_response.status_code == 200
 
     dataset_response = client.post(
         "/api/ml/datasets/build",
-        json={"region_id": "sf_bay_estuary", "label_type": "hotspot_presence", "max_forecast_runs": 3},
+        json={"region_id": "sf_bay_estuary", "label_type": "hotspot_presence", "max_forecast_runs": 8},
     )
     dataset_id = dataset_response.json()["dataset_id"]
     train_response = client.post(
@@ -122,7 +127,21 @@ def test_sequence_architecture_request_is_rejected_until_sequence_trainer_exists
             "region_id": "sf_bay_estuary",
             "dataset_id": dataset_id,
             "architecture": "convlstm",
-            "activate": False,
+            "activate": True,
+            "epochs": 1,
+            "batch_size": 2,
         },
     )
-    assert train_response.status_code == 400
+    assert train_response.status_code == 200
+    train_payload = train_response.json()
+    assert train_payload["model"]["stage"] == "candidate"
+    assert train_payload["model"]["is_active"] is False
+    assert train_payload["metrics"]["promotion_eligible"] is False
+    assert "sample_count<50" in train_payload["metrics"]["promotion_blockers"]
+
+
+test_small_sequence_training_stays_candidate_when_evaluation_data_is_too_small = pytest.mark.slow(
+    pytest.mark.ml(
+        pytest.mark.backfill(test_small_sequence_training_stays_candidate_when_evaluation_data_is_too_small)
+    )
+)

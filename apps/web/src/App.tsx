@@ -138,10 +138,13 @@ function modelLabel(provenance: ForecastProvenance): string {
     return "Baseline-only forecast";
   }
   const scopeLabel = provenance.training_scope === "shared" ? "shared" : provenance.training_scope === "per_region" ? "regional" : null;
+  const stageLabel = provenance.model_stage ? ` [${provenance.model_stage}]` : "";
+  const overrideLabel = provenance.used_candidate_override ? " candidate override" : "";
+  const fallbackLabel = provenance.used_inference_fallback ? " fallback used" : "";
   if (provenance.model_dataset_version) {
-    return `Model ${provenance.model_architecture} ${provenance.model_dataset_version}${scopeLabel ? ` (${scopeLabel})` : ""}`;
+    return `Model ${provenance.model_architecture} ${provenance.model_dataset_version}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}${overrideLabel}${fallbackLabel}`;
   }
-  return `Model ${provenance.model_architecture}${scopeLabel ? ` (${scopeLabel})` : ""}`;
+  return `Model ${provenance.model_architecture}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}${overrideLabel}${fallbackLabel}`;
 }
 
 function confidenceBand(snapshot: ForecastSnapshot | null): string {

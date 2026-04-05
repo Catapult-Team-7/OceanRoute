@@ -28,6 +28,10 @@ from app.services.data_lake_service import model_registry_root
 
 
 SHARED_MODEL_REGION_ID = "__shared__"
+MIN_PROMOTION_SAMPLE_COUNT = 50
+MIN_PROMOTION_TEST_SPLIT_COUNT = 10
+MIN_DEFINED_HOTSPOT_POSITIVE_CELLS = 10
+MIN_DEFINED_HOTSPOT_POSITIVE_SAMPLES = 2
 
 
 def _now() -> datetime:
@@ -40,7 +44,27 @@ def _write_json(path: Path, payload: dict[str, Any]) -> str:
     return str(path)
 
 
+def _export_format_from_payload(payload: dict[str, Any]) -> str | None:
+    raw = payload.get("export_format")
+    if isinstance(raw, str) and raw in {"trace", "script", "json"}:
+        return raw
+    artifact_paths = payload.get("artifact_paths", {})
+    if isinstance(artifact_paths, dict):
+        model_path = artifact_paths.get("model")
+        if isinstance(model_path, str) and model_path.endswith(".ts"):
+            return "script"
+    return "json" if payload.get("architecture") == "linear_residual" else None
+
+
 def _to_registry_entry(model: ModelRegistryModel) -> ModelRegistryEntry:
+    export_format = None
+    try:
+        export_format = _export_format_from_payload(_load_artifact_payload(model))
+    except Exception:
+        if model.export_artifact_path and model.export_artifact_path.endswith(".ts"):
+            export_format = "script"
+        elif model.export_artifact_path or model.artifact_path:
+            export_format = "json"
     return ModelRegistryEntry(
         model_id=model.model_id,
         region_id=model.region_id,
@@ -63,6 +87,7 @@ def _to_registry_entry(model: ModelRegistryModel) -> ModelRegistryEntry:
         best_checkpoint_path=model.best_checkpoint_path,
         checkpoint_path=model.checkpoint_path,
         export_artifact_path=model.export_artifact_path,
+        export_format=export_format,  # type: ignore[arg-type]
         evaluation_path=model.evaluation_path,
         framework=model.framework,
         metrics=dict(model.metrics_json),
@@ -100,9 +125,74 @@ def _split_indexes(bundle, split: str, region_ids: list[str]) -> list[int]:
     return indexes
 
 
+def _filtered_sample_rows(bundle, region_ids: list[str]) -> list[dict[str, Any]]:
+    requested_regions = set(region_ids)
+    split_lookup = {str(row["sample_id"]): row for row in bundle.split_rows}
+    rows: list[dict[str, Any]] = []
+    for row in bundle.manifest_rows:
+        if requested_regions and str(row["region_id"]) not in requested_regions:
+            continue
+        sample_id = str(row["sample_id"])
+        split_row = split_lookup.get(sample_id)
+        if split_row is None:
+            continue
+        rows.append({**row, **split_row})
+    return rows
+
+
 def _horizon_indexes(bundle, horizons: list[int]) -> list[int]:
     available = list(bundle.metadata.get("horizons", [24, 48, 72]))
     return [available.index(horizon) for horizon in horizons]
+
+
+def _positive_sample_count(targets: np.ndarray) -> int:
+    if targets.size == 0:
+        return 0
+    return int(np.sum(np.any(targets > 0.5, axis=tuple(range(1, targets.ndim)))))
+
+
+def _evaluation_context(bundle, region_ids: list[str], horizons: list[int]) -> dict[str, Any]:
+    rows = _filtered_sample_rows(bundle, region_ids)
+    split_counts = {"train": 0, "val": 0, "test": 0}
+    for row in rows:
+        split = str(row.get("split", ""))
+        if split in split_counts:
+            split_counts[split] += 1
+
+    test_indexes = _split_indexes(bundle, "test", region_ids)
+    horizon_indexes = _horizon_indexes(bundle, horizons)
+    test_positive_cell_count = 0
+    test_positive_sample_count = 0
+    if test_indexes:
+        test_probability = bundle.y_probability[test_indexes][:, horizon_indexes]
+        test_positive_cell_count = int(np.sum(test_probability > 0.5))
+        test_positive_sample_count = _positive_sample_count(test_probability)
+
+    precision_defined = (
+        test_positive_cell_count >= MIN_DEFINED_HOTSPOT_POSITIVE_CELLS
+        and test_positive_sample_count >= MIN_DEFINED_HOTSPOT_POSITIVE_SAMPLES
+    )
+    promotion_blockers: list[str] = []
+    if len(rows) < MIN_PROMOTION_SAMPLE_COUNT:
+        promotion_blockers.append(f"sample_count<{MIN_PROMOTION_SAMPLE_COUNT}")
+    if split_counts["test"] < MIN_PROMOTION_TEST_SPLIT_COUNT:
+        promotion_blockers.append(f"test_split_count<{MIN_PROMOTION_TEST_SPLIT_COUNT}")
+    metric_notes: list[str] = []
+    if not precision_defined:
+        metric_notes.append("Hotspot ranking metrics are not trustworthy yet because the test set has too few positive labels.")
+
+    return {
+        "sample_count": len(rows),
+        "split_counts": split_counts,
+        "test_split_count": split_counts["test"],
+        "test_positive_cell_count": test_positive_cell_count,
+        "test_positive_sample_count": test_positive_sample_count,
+        "precision_at_10_defined": precision_defined,
+        "recall_at_10_defined": precision_defined,
+        "promotion_eligible": len(promotion_blockers) == 0,
+        "promotion_blockers": promotion_blockers,
+        "metric_notes": metric_notes,
+    }
 
 
 def _baseline_prediction(x_tensor: np.ndarray, num_horizons: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -149,6 +239,7 @@ def _load_artifact_payload(row: ModelRegistryModel) -> dict[str, Any]:
 
 
 def _baseline_metrics(bundle, region_ids: list[str], horizons: list[int]) -> dict[str, Any]:
+    evaluation_context = _evaluation_context(bundle, region_ids, horizons)
     test_indexes = _split_indexes(bundle, "test", region_ids)
     if not test_indexes:
         raise ValueError("Dataset did not contain a test split for the requested training scope.")
@@ -158,7 +249,8 @@ def _baseline_metrics(bundle, region_ids: list[str], horizons: list[int]) -> dic
     y_kg_test = bundle.y_expected_kg[test_indexes][:, horizon_indexes]
     y_unc_test = bundle.y_uncertainty[test_indexes][:, horizon_indexes]
     baseline_prob, baseline_kg, baseline_unc = _baseline_prediction(x_test, len(horizons))
-    return compute_eval_metrics(
+    return {
+        **compute_eval_metrics(
         probabilities=baseline_prob,
         predicted_kg=baseline_kg,
         predicted_uncertainty=baseline_unc,
@@ -167,7 +259,9 @@ def _baseline_metrics(bundle, region_ids: list[str], horizons: list[int]) -> dic
         target_expected_kg=y_kg_test[:, : len(horizons)],
         target_uncertainty=y_unc_test[:, : len(horizons)],
         horizons=horizons,
-    )
+        ),
+        **evaluation_context,
+    }
 
 
 def _linear_residual_artifact(
@@ -179,6 +273,7 @@ def _linear_residual_artifact(
     training_scope: str,
 ) -> dict[str, Any]:
     bundle = load_dataset_bundle(dataset_root)
+    evaluation_context = _evaluation_context(bundle, region_ids, list(request.horizons))
     test_indexes = _split_indexes(bundle, "test", region_ids)
     if not test_indexes:
         raise ValueError("Dataset did not contain a test split for the requested training scope.")
@@ -188,7 +283,8 @@ def _linear_residual_artifact(
     y_kg_test = bundle.y_expected_kg[test_indexes][:, horizon_indexes]
     y_unc_test = bundle.y_uncertainty[test_indexes][:, horizon_indexes]
     predicted_prob, predicted_kg, predicted_unc = _linear_residual_prediction(x_test, len(request.horizons))
-    metrics = compute_eval_metrics(
+    metrics = {
+        **compute_eval_metrics(
         probabilities=predicted_prob,
         predicted_kg=predicted_kg,
         predicted_uncertainty=predicted_unc,
@@ -197,7 +293,9 @@ def _linear_residual_artifact(
         target_expected_kg=y_kg_test,
         target_uncertainty=y_unc_test,
         horizons=list(request.horizons),
-    )
+        ),
+        **evaluation_context,
+    }
     artifact_dir = model_registry_root() / model_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
     eval_path = artifact_dir / "eval_metrics.json"
@@ -281,6 +379,19 @@ def _automatic_promotion(
         training_scope=row.training_scope,
         compatible_region=compatible_region,
     )
+    if not bool(candidate_metrics.get("promotion_eligible", False)):
+        blockers = [str(item) for item in candidate_metrics.get("promotion_blockers", [])]
+        reason = "Candidate stayed in candidate stage because insufficient evaluation data."
+        if blockers:
+            reason = f"{reason} Blockers: {', '.join(blockers)}."
+        return ModelPromotionResponse(
+            promoted_model_id=None,
+            previous_model_id=current.model_id if current is not None else None,
+            region_id=row.region_id,
+            reason=reason,
+            promoted=False,
+        )
+
     previous_model_id = current.model_id if current is not None else None
     candidate_route_uplift = float(candidate_metrics["route_uplift_pct"])
     candidate_precision = float(candidate_metrics["precision_at_10"])
@@ -397,6 +508,7 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
 
     dataset_root = Path(dataset.artifact_path)
     bundle = load_dataset_bundle(dataset_root)
+    evaluation_context = _evaluation_context(bundle, region_ids, list(effective_horizons))
     baseline_metrics = _baseline_metrics(bundle, region_ids, list(effective_horizons))
     if request.architecture == "linear_residual":
         linear_request = request.model_copy(update={"horizons": effective_horizons})
@@ -413,6 +525,7 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
             max(float(result["metrics"]["route_uplift_pct"]), float(baseline_metrics["route_uplift_pct"]) + 2.5),
             4,
         )
+        result["metrics"].update(evaluation_context)
         Path(result["evaluation_path"]).write_text(json.dumps(result["metrics"], indent=2, default=str), encoding="utf-8")
         payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
         payload["eval_metrics"] = result["metrics"]
@@ -439,6 +552,7 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
             training_command=training_command,
         )
         result = train_sequence_model(config, dataset_root)
+        result["metrics"] = {**result["metrics"], **evaluation_context}
         result.update(
             {
                 "artifact_path": result["artifact_paths"]["metadata_path"],
@@ -453,6 +567,10 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
                 "artifact_dir": result["artifact_paths"]["artifact_dir"],
             }
         )
+        Path(result["evaluation_path"]).write_text(json.dumps(result["metrics"], indent=2, default=str), encoding="utf-8")
+        payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+        payload["eval_metrics"] = result["metrics"]
+        Path(result["artifact_path"]).write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
     model_row = ModelRegistryModel(
         model_id=model_id,
@@ -519,9 +637,16 @@ def evaluate_model(model_id: str, db: Session) -> ModelEvaluateResponse:
     if row is None or row.evaluation_path is None:
         raise LookupError(f"Model {model_id} does not have an evaluation artifact.")
     payload = json.loads(Path(row.evaluation_path).read_text(encoding="utf-8"))
+    try:
+        export_format = _export_format_from_payload(_load_artifact_payload(row))
+    except Exception:
+        export_format = "json" if row.architecture == "linear_residual" else None
     return ModelEvaluateResponse(
         model_id=row.model_id,
         region_id=row.region_id,
+        stage=row.stage,  # type: ignore[arg-type]
+        artifact_path=row.artifact_path,
+        export_format=export_format,  # type: ignore[arg-type]
         metrics=dict(payload),
         evaluation_path=row.evaluation_path,
     )
@@ -585,18 +710,31 @@ def get_active_model_payload(db: Session, region_id: str, model_id: str | None =
     row = db.get(ModelRegistryModel, entry.model_id)
     if row is None:
         return None
-    payload = _load_artifact_payload(row)
+    try:
+        payload = _load_artifact_payload(row)
+    except Exception:
+        payload = {}
     payload.setdefault("model_id", row.model_id)
+    payload.setdefault("resolved_model_id", row.model_id)
     payload.setdefault("architecture", row.architecture)
     payload.setdefault("dataset_version", row.dataset_version)
+    payload.setdefault("model_stage", row.stage)
     payload.setdefault("training_scope", row.training_scope)
+    payload.setdefault("artifact_paths", {"model": row.export_artifact_path} if row.export_artifact_path else {})
+    payload.setdefault("export_format", _export_format_from_payload(payload))
     return payload
 
 
-def apply_active_model_adjustments(steps: list[ForecastStep], region_id: str, db: Session) -> tuple[list[ForecastStep], dict[str, Any] | None]:
-    payload = get_active_model_payload(db, region_id)
+def apply_active_model_adjustments(
+    steps: list[ForecastStep],
+    region_id: str,
+    db: Session,
+    *,
+    model_id: str | None = None,
+) -> tuple[list[ForecastStep], dict[str, Any] | None]:
+    payload = get_active_model_payload(db, region_id, model_id=model_id)
     if payload is None or payload.get("architecture") != "linear_residual":
-        return steps, payload
+        return steps, None
     probability_scale = float(payload.get("probability_scale", 1.0))
     kg_scale = float(payload.get("kg_scale", 1.0))
     uncertainty_scale = float(payload.get("uncertainty_scale", 1.0))

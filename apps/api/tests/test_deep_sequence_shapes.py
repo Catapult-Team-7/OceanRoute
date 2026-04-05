@@ -6,6 +6,7 @@ from app.ml.sequence_model_architectures import TORCH_AVAILABLE, build_model
 
 
 pytestmark = pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch is not installed in the base test environment")
+pytestmark = [pytestmark, pytest.mark.ml]
 
 
 def test_sequence_models_emit_three_multi_horizon_heads() -> None:

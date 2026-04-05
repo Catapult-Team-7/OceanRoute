@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.db import SessionLocal
 from app.models import ForecastRunModel, ForecastStepModel, ObservationModel, RoutePlanModel
+
+
+pytestmark = pytest.mark.integration
 
 
 def _now_iso() -> str:

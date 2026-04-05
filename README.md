@@ -134,11 +134,26 @@ cd C:\Users\clewr\Catapult-2026
 .\.venv\Scripts\python.exe -m app.cli run-forecast --region-id puget_sound --source-mode sample --horizon-hours 48
 ```
 
+Run a forecast against an explicit candidate or champion model without changing promotion state:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli run-forecast --region-id sf_bay_estuary --source-mode sample --horizon-hours 24 --model-id <model-id>
+```
+
 Backfill historical baseline artifacts for one region:
 
 ```powershell
 cd C:\Users\clewr\Catapult-2026
 .\.venv\Scripts\python.exe -m app.cli backfill-history --region-id long_island_sound --source-mode sample --days 28
+```
+
+`backfill-history` now defaults to the fast historical `dataset_only` mode. That mode writes only the minimal forecast-run rows plus baseline artifacts needed by the dataset builder and returns per-chunk timings. Use full live-style replay only when you explicitly need it:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+.\.venv\Scripts\python.exe -m app.cli backfill-history --region-id sf_bay_estuary --source-mode sample --days 120 --mode dataset_only --chunk-days 28
+.\.venv\Scripts\python.exe -m app.cli backfill-history --region-id sf_bay_estuary --source-mode sample --days 28 --mode live_parity
 ```
 
 Supported built-in regions today:
@@ -215,6 +230,17 @@ Current trainer behavior:
 - the nested `ml train` flow supports `shared`, `per_region`, and `both` scopes; `both` runs one shared job plus one per-region job per listed region
 - successful deep training writes TensorBoard logs, checkpoints, plots, an exported deployable artifact, and then registers the resulting model automatically
 - the forecast API records baseline engine, artifact provenance, model version, dataset version, and prediction artifact URI so the UI can surface trust metadata
+- `model.ts` is the expected deep runtime artifact and is intentionally TorchScript; model metadata records whether export used `trace` or `script`
+- `auto` promotion is conservative and now requires at least `50` filtered samples with at least `10` test samples; smaller runs stay `candidate` even if training/export succeeded
+- candidate models can be tested directly in forecast runtime with `run-forecast --model-id <model-id>` or `POST /api/forecast/run` with `model_id`, without promoting them first
+
+Recommended trust workflow:
+
+1. Backfill more history for the region you want to validate first.
+2. Rebuild a dataset with enough runs to produce a meaningful test split.
+3. Train the deep model and inspect `ml evaluate` for sample counts, split counts, and promotion blockers.
+4. Run one forecast with an explicit `model_id` to verify runtime loading and provenance.
+5. Only then manually promote, or let `auto` promote after the data-sufficiency gate is satisfied.
 
 ## Verification
 
@@ -223,6 +249,15 @@ Backend tests:
 ```powershell
 cd C:\Users\clewr\Catapult-2026
 .\.venv\Scripts\python.exe -m pytest -q apps\api\tests
+```
+
+The default backend pytest loop now skips `slow` and `e2e` tests. Use the helper scripts for the intended tier:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+powershell -ExecutionPolicy Bypass -File scripts\test-fast.ps1
+powershell -ExecutionPolicy Bypass -File scripts\test-integration.ps1
+powershell -ExecutionPolicy Bypass -File scripts\test-full.ps1
 ```
 
 Frontend tests:

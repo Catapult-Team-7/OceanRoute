@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -32,16 +33,47 @@ def _upgrade_test_db() -> None:
     command.upgrade(config, "head")
 
 
-@pytest.fixture(autouse=True)
-def reset_db() -> None:
+def _clear_database() -> None:
+    with engine.begin() as connection:
+        for table in reversed(Base.metadata.sorted_tables):
+            connection.execute(table.delete())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_test_db() -> None:
     engine.dispose()
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
+    if TEST_DATA_ROOT.exists():
+        shutil.rmtree(TEST_DATA_ROOT)
+    TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
     _upgrade_test_db()
     yield
     engine.dispose()
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
+    if TEST_DATA_ROOT.exists():
+        shutil.rmtree(TEST_DATA_ROOT)
+
+
+@pytest.fixture(autouse=True)
+def clean_test_state(migrated_test_db) -> None:
+    _clear_database()
+    if TEST_DATA_ROOT.exists():
+        shutil.rmtree(TEST_DATA_ROOT)
+    TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    yield
+    _clear_database()
+    if TEST_DATA_ROOT.exists():
+        shutil.rmtree(TEST_DATA_ROOT)
+    TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_dataset_export_path(migrated_test_db) -> Path:
+    fixture_root = TEST_DATA_ROOT / "fixtures" / "tiny-sequence-dataset"
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    return fixture_root
 
 
 @pytest.fixture()

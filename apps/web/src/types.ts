@@ -4,6 +4,7 @@ export type SourceMode = "auto" | "sample" | "live";
 export type BaselineEngine = "pygnome" | "custom_particle";
 export type ModelArchitecture = "linear_residual" | "temporal_unet" | "convlstm";
 export type TrainingScope = "shared" | "per_region";
+export type ModelStage = "candidate" | "champion" | "archived";
 
 export interface HealthStatus {
   status: string;
@@ -83,10 +84,15 @@ export interface ForecastProvenance {
   source_notes: string[];
   baseline_engine?: BaselineEngine | null;
   baseline_artifact_uri?: string | null;
+  requested_model_id?: string | null;
+  resolved_model_id?: string | null;
   model_id?: string | null;
   model_architecture?: ModelArchitecture | null;
   model_dataset_version?: string | null;
+  model_stage?: ModelStage | null;
   training_scope?: TrainingScope | null;
+  used_candidate_override: boolean;
+  used_inference_fallback: boolean;
   inference_service_version?: string | null;
   prediction_artifact_uri?: string | null;
 }
@@ -108,7 +114,7 @@ export interface ForecastSnapshot {
   steps: ForecastStep[];
   top_hotspots: HotspotSummary[];
   provenance: ForecastProvenance;
-  summary: Record<string, number | string>;
+  summary: Record<string, number | string | boolean>;
 }
 
 export interface RouteLeg {
@@ -138,7 +144,7 @@ export interface RoutePlan {
   forecast_run_id: string | null;
   forecast_provenance: ForecastProvenance | null;
   forecast_is_stale: boolean;
-  metadata: Record<string, number | string>;
+  metadata: Record<string, number | string | boolean>;
 }
 
 export interface ImpactDashboard {

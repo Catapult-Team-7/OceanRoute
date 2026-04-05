@@ -17,6 +17,8 @@ ModelStage = Literal["candidate", "champion", "archived"]
 TrainingScope = Literal["shared", "per_region"]
 TrainingScopeRequest = Literal["shared", "per_region", "both"]
 PromotionPolicy = Literal["auto", "candidate_only", "always_activate"]
+ModelExportFormat = Literal["trace", "script", "json"]
+BackfillMode = Literal["dataset_only", "live_parity"]
 
 
 DEBRIS_CLASS_METADATA: dict[DebrisClass, dict[str, object]] = {
@@ -64,10 +66,15 @@ class ForecastProvenance(BaseModel):
     source_notes: list[str] = Field(default_factory=list)
     baseline_engine: BaselineEngine | None = None
     baseline_artifact_uri: str | None = None
+    requested_model_id: str | None = None
+    resolved_model_id: str | None = None
     model_id: str | None = None
     model_architecture: ModelArchitecture | None = None
     model_dataset_version: str | None = None
+    model_stage: ModelStage | None = None
     training_scope: TrainingScope | None = None
+    used_candidate_override: bool = False
+    used_inference_fallback: bool = False
     inference_service_version: str | None = None
     prediction_artifact_uri: str | None = None
 
@@ -266,6 +273,7 @@ class ForecastRunRequest(BaseModel):
     source_strength: float = Field(default=1.0, ge=0.0)
     seed: int = 42
     source_mode: SourceMode = "auto"
+    model_id: str | None = None
 
 
 class ForecastRunResponse(BaseModel):
@@ -282,7 +290,7 @@ class ForecastRunResponse(BaseModel):
     steps_generated: int
     top_hotspots: list[HotspotSummary]
     provenance: ForecastProvenance
-    summary: dict[str, float | int | str]
+    summary: dict[str, Any]
 
 
 class ForecastSnapshot(BaseModel):
@@ -302,7 +310,7 @@ class ForecastSnapshot(BaseModel):
     steps: list[ForecastStep]
     top_hotspots: list[HotspotSummary]
     provenance: ForecastProvenance
-    summary: dict[str, float | int | str]
+    summary: dict[str, Any]
 
 
 class HotspotQueryResponse(BaseModel):
@@ -423,16 +431,39 @@ class HistoricalBackfillRequest(BaseModel):
     region_id: str
     source_mode: SourceMode = "sample"
     days: int = Field(default=180, ge=1, le=366)
+    mode: BackfillMode = "dataset_only"
+    chunk_days: int = Field(default=28, ge=1, le=180)
+    ensemble_members: int | None = Field(default=None, ge=1, le=32)
+    particles_per_member: int | None = Field(default=None, ge=16, le=5000)
     debris_classes: list[DebrisClass] = Field(default_factory=lambda: ["low", "high"])
+
+
+class HistoricalBackfillTiming(BaseModel):
+    region_id: str
+    chunk_index: int = Field(ge=1)
+    timestamps_in_chunk: int = Field(ge=0)
+    runs_created: int = Field(ge=0)
+    baseline_artifacts_created: int = Field(ge=0)
+    setup_ms: float = Field(ge=0.0)
+    source_load_ms: float = Field(ge=0.0)
+    baseline_ms: float = Field(ge=0.0)
+    artifact_write_ms: float = Field(ge=0.0)
+    db_write_ms: float = Field(ge=0.0)
+    total_ms: float = Field(ge=0.0)
 
 
 class HistoricalBackfillResponse(BaseModel):
     region_id: str
     source_mode: SourceMode
     days_backfilled: int
+    mode: BackfillMode
     runs_created: int
     baseline_artifacts_created: int
     dataset_ready_run_count: int
+    timestamps_planned: int
+    timestamps_processed: int
+    chunk_count: int
+    timings: list[HistoricalBackfillTiming] = Field(default_factory=list)
 
 
 class DatasetExportRequest(BaseModel):
@@ -507,21 +538,25 @@ class ModelRegistryEntry(BaseModel):
     best_checkpoint_path: str | None = None
     checkpoint_path: str | None = None
     export_artifact_path: str | None = None
+    export_format: ModelExportFormat | None = None
     evaluation_path: str | None = None
     framework: str | None = None
-    metrics: dict[str, float | int | str]
+    metrics: dict[str, Any]
 
 
 class ModelTrainResponse(BaseModel):
     training_run_id: str
     model: ModelRegistryEntry
-    metrics: dict[str, float | int | str]
+    metrics: dict[str, Any]
 
 
 class ModelEvaluateResponse(BaseModel):
     model_id: str
     region_id: str
-    metrics: dict[str, float | int | str]
+    stage: ModelStage
+    artifact_path: str
+    export_format: ModelExportFormat | None = None
+    metrics: dict[str, Any]
     evaluation_path: str
 
 

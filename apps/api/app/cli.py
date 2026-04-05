@@ -64,6 +64,7 @@ def _run_forecast(args: argparse.Namespace) -> None:
                 source_strength=args.source_strength,
                 seed=args.seed,
                 source_mode=args.source_mode,
+                model_id=args.model_id,
             ),
             session,
         )
@@ -236,6 +237,10 @@ def _backfill_history(args: argparse.Namespace) -> None:
                 region_id=args.region_id,
                 source_mode=args.source_mode,
                 days=args.days,
+                mode=args.mode,
+                chunk_days=args.chunk_days,
+                ensemble_members=args.ensemble_members,
+                particles_per_member=args.particles_per_member,
                 debris_classes=["low", "high"],
             ),
             session,
@@ -268,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     forecast_parser.add_argument("--source-mode", choices=["auto", "sample", "live"], default="auto")
     forecast_parser.add_argument("--source-strength", type=float, default=1.0)
     forecast_parser.add_argument("--seed", type=int, default=42)
+    forecast_parser.add_argument("--model-id", default=None)
     forecast_parser.set_defaults(func=_run_forecast)
 
     seed_parser = subparsers.add_parser("seed-demo", help="Seed the canonical SF Bay mission loop.")
@@ -320,6 +326,10 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_parser.add_argument("--region-id", default=settings.pilot_region)
     backfill_parser.add_argument("--source-mode", choices=["sample", "live", "auto"], default="sample")
     backfill_parser.add_argument("--days", type=int, default=settings.historical_backfill_days)
+    backfill_parser.add_argument("--mode", choices=["dataset_only", "live_parity"], default="dataset_only")
+    backfill_parser.add_argument("--chunk-days", type=int, default=28)
+    backfill_parser.add_argument("--ensemble-members", type=int, default=None)
+    backfill_parser.add_argument("--particles-per-member", type=int, default=None)
     backfill_parser.set_defaults(func=_backfill_history)
 
     list_parser = subparsers.add_parser("list-ml", help="List ML datasets and models.")

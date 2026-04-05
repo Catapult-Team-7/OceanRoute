@@ -94,9 +94,9 @@ def _summary_for_steps(
     source_mode_used: str,
     active_model: dict[str, object] | None = None,
     baseline_engine: str | None = None,
-) -> dict[str, float | int | str]:
+) -> dict[str, object]:
     if not steps:
-        summary: dict[str, float | int | str] = {
+        summary: dict[str, object] = {
             "step_count": 0,
             "top_expected_kg_max": 0.0,
             "mean_confidence": 0.0,
@@ -104,10 +104,19 @@ def _summary_for_steps(
         }
         if baseline_engine:
             summary["baseline_engine"] = baseline_engine
-        if active_model is not None and active_model.get("model_id"):
-            summary["active_model_id"] = str(active_model["model_id"])
+        if active_model is not None and active_model.get("resolved_model_id"):
+            summary["resolved_model_id"] = str(active_model["resolved_model_id"])
+            summary["active_model_id"] = str(active_model["resolved_model_id"])
         if active_model is not None and active_model.get("training_scope"):
             summary["training_scope"] = str(active_model["training_scope"])
+        if active_model is not None and active_model.get("requested_model_id"):
+            summary["requested_model_id"] = str(active_model["requested_model_id"])
+        if active_model is not None and active_model.get("model_stage"):
+            summary["model_stage"] = str(active_model["model_stage"])
+        if active_model is not None and active_model.get("used_candidate_override") is not None:
+            summary["used_candidate_override"] = bool(active_model["used_candidate_override"])
+        if active_model is not None and active_model.get("used_inference_fallback") is not None:
+            summary["used_inference_fallback"] = bool(active_model["used_inference_fallback"])
         return summary
     summary = {
         "step_count": len(steps),
@@ -119,10 +128,19 @@ def _summary_for_steps(
     }
     if baseline_engine:
         summary["baseline_engine"] = baseline_engine
-    if active_model is not None and active_model.get("model_id"):
-        summary["active_model_id"] = str(active_model["model_id"])
+    if active_model is not None and active_model.get("resolved_model_id"):
+        summary["resolved_model_id"] = str(active_model["resolved_model_id"])
+        summary["active_model_id"] = str(active_model["resolved_model_id"])
     if active_model is not None and active_model.get("training_scope"):
         summary["training_scope"] = str(active_model["training_scope"])
+    if active_model is not None and active_model.get("requested_model_id"):
+        summary["requested_model_id"] = str(active_model["requested_model_id"])
+    if active_model is not None and active_model.get("model_stage"):
+        summary["model_stage"] = str(active_model["model_stage"])
+    if active_model is not None and active_model.get("used_candidate_override") is not None:
+        summary["used_candidate_override"] = bool(active_model["used_candidate_override"])
+    if active_model is not None and active_model.get("used_inference_fallback") is not None:
+        summary["used_inference_fallback"] = bool(active_model["used_inference_fallback"])
     return summary
 
 
@@ -248,10 +266,15 @@ def _provenance_from_run(run: ForecastRunModel) -> ForecastProvenance:
         source_notes=list(run.source_notes),
         baseline_engine=str(run.summary.get("baseline_engine")) if run.summary.get("baseline_engine") else None,
         baseline_artifact_uri=str(run.summary.get("baseline_artifact_uri")) if run.summary.get("baseline_artifact_uri") else None,
+        requested_model_id=str(run.summary.get("requested_model_id")) if run.summary.get("requested_model_id") else None,
+        resolved_model_id=str(run.summary.get("resolved_model_id")) if run.summary.get("resolved_model_id") else None,
         model_id=str(run.summary.get("active_model_id")) if run.summary.get("active_model_id") else None,
         model_architecture=str(run.summary.get("model_architecture")) if run.summary.get("model_architecture") else None,
         model_dataset_version=str(run.summary.get("model_dataset_version")) if run.summary.get("model_dataset_version") else None,
+        model_stage=str(run.summary.get("model_stage")) if run.summary.get("model_stage") else None,
         training_scope=str(run.summary.get("training_scope")) if run.summary.get("training_scope") else None,
+        used_candidate_override=bool(run.summary.get("used_candidate_override", False)),
+        used_inference_fallback=bool(run.summary.get("used_inference_fallback", False)),
         inference_service_version=str(run.summary.get("inference_service_version")) if run.summary.get("inference_service_version") else None,
         prediction_artifact_uri=str(run.summary.get("prediction_artifact_uri")) if run.summary.get("prediction_artifact_uri") else None,
     )
@@ -264,9 +287,15 @@ def _snapshot_from_run(run: ForecastRunModel, steps: list[ForecastStep]) -> Fore
         run.source_mode_used,
         {
             "model_id": run.summary.get("active_model_id"),
+            "resolved_model_id": run.summary.get("resolved_model_id"),
+            "requested_model_id": run.summary.get("requested_model_id"),
+            "model_stage": run.summary.get("model_stage"),
             "training_scope": run.summary.get("training_scope"),
+            "used_candidate_override": run.summary.get("used_candidate_override", False),
+            "used_inference_fallback": run.summary.get("used_inference_fallback", False),
         }
         if run.summary.get("active_model_id")
+        or run.summary.get("requested_model_id")
         else None,
         baseline_engine=str(run.summary.get("baseline_engine")) if run.summary.get("baseline_engine") else None,
     )
@@ -275,6 +304,11 @@ def _snapshot_from_run(run: ForecastRunModel, steps: list[ForecastStep]) -> Fore
         "model_architecture",
         "model_dataset_version",
         "training_scope",
+        "requested_model_id",
+        "resolved_model_id",
+        "model_stage",
+        "used_candidate_override",
+        "used_inference_fallback",
         "prediction_artifact_uri",
         "inference_service_version",
         "baseline_artifact_uri",
@@ -326,9 +360,13 @@ def run_forecast(
     run_id = str(uuid4())
     steps: list[ForecastStep] = []
     baseline_artifacts: dict[tuple[str, int], str] = {}
-    active_model_entry = get_active_model_entry(db, context.region.id)
+    active_model_entry = get_active_model_entry(db, context.region.id, model_id=request.model_id)
+    if request.model_id and active_model_entry is None:
+        raise LookupError(f"Requested model {request.model_id} was not found or is not compatible with region {context.region.id}.")
     active_model_payload: dict[str, object] | None = None
     selected_baseline_engine: str | None = None
+    used_inference_fallback = False
+    used_candidate_override = bool(request.model_id and active_model_entry is not None and active_model_entry.stage == "candidate")
 
     for frame in context.frames:
         history_bias = _history_bias(frame, db)
@@ -428,6 +466,10 @@ def run_forecast(
         for debris_class in request.debris_classes:
             feature_bundle = _feature_tensor_from_baselines(run_id, debris_class, db)
             if feature_bundle is None:
+                if request.model_id:
+                    raise ValueError(
+                        f"Requested model {request.model_id} could not be used because runtime features were unavailable."
+                    )
                 continue
             feature_artifact_uri, _ = feature_bundle
             try:
@@ -442,6 +484,11 @@ def run_forecast(
                     ),
                     db,
                 )
+                if request.model_id and prediction.used_fallback:
+                    raise ValueError(
+                        f"Requested model {request.model_id} could not be used for inference without fallback."
+                    )
+                used_inference_fallback = used_inference_fallback or prediction.used_fallback
                 prediction_prob = read_tensor(prediction.artifact.hotspot_probability_uri)
                 prediction_kg = read_tensor(prediction.artifact.expected_kg_uri)
                 prediction_uncertainty = read_tensor(prediction.artifact.uncertainty_uri) if prediction.artifact.uncertainty_uri else None
@@ -463,17 +510,39 @@ def run_forecast(
                 prediction_artifact_uri = prediction.artifact.manifest_uri
                 inference_service_version = prediction.artifact.inference_service_version
                 active_model_payload = {
+                    "requested_model_id": request.model_id,
+                    "resolved_model_id": prediction.loaded_model_id,
                     "model_id": prediction.loaded_model_id,
                     "architecture": active_model_entry.architecture,
                     "dataset_version": active_model_entry.dataset_version or settings.dataset_version,
+                    "model_stage": active_model_entry.stage,
                     "training_scope": prediction.artifact.training_scope or active_model_entry.training_scope,
+                    "used_candidate_override": used_candidate_override,
+                    "used_inference_fallback": prediction.used_fallback,
                 }
-            except Exception:
+            except Exception as exc:
+                if request.model_id:
+                    raise ValueError(
+                        f"Requested model {request.model_id} could not be used for inference."
+                    ) from exc
                 continue
 
-    steps, linear_payload = apply_active_model_adjustments(steps, context.region.id, db)
+    steps, linear_payload = apply_active_model_adjustments(
+        steps,
+        context.region.id,
+        db,
+        model_id=request.model_id,
+    )
     if active_model_payload is None:
         active_model_payload = linear_payload
+    if active_model_payload is not None:
+        active_model_payload = {
+            **active_model_payload,
+            "requested_model_id": request.model_id,
+            "resolved_model_id": active_model_payload.get("resolved_model_id") or active_model_payload.get("model_id"),
+            "used_candidate_override": used_candidate_override,
+            "used_inference_fallback": used_inference_fallback,
+        }
     step_models = [
         ForecastStepModel(
             run_id=run_id,
@@ -508,8 +577,16 @@ def run_forecast(
         summary["model_architecture"] = str(active_model_payload["architecture"])
     if active_model_payload and active_model_payload.get("dataset_version"):
         summary["model_dataset_version"] = str(active_model_payload["dataset_version"])
+    if active_model_payload and active_model_payload.get("resolved_model_id"):
+        summary["resolved_model_id"] = str(active_model_payload["resolved_model_id"])
     if active_model_payload and active_model_payload.get("training_scope"):
         summary["training_scope"] = str(active_model_payload["training_scope"])
+    if active_model_payload and active_model_payload.get("requested_model_id"):
+        summary["requested_model_id"] = str(active_model_payload["requested_model_id"])
+    if active_model_payload and active_model_payload.get("model_stage"):
+        summary["model_stage"] = str(active_model_payload["model_stage"])
+    summary["used_candidate_override"] = used_candidate_override
+    summary["used_inference_fallback"] = used_inference_fallback
     if prediction_artifact_uri:
         summary["prediction_artifact_uri"] = prediction_artifact_uri
     if inference_service_version:
@@ -540,10 +617,15 @@ def run_forecast(
         source_notes=context.source_notes,
         baseline_engine=selected_baseline_engine,
         baseline_artifact_uri=next(iter(baseline_artifacts.values())) if baseline_artifacts else None,
+        requested_model_id=request.model_id,
+        resolved_model_id=str(active_model_payload["resolved_model_id"]) if active_model_payload and active_model_payload.get("resolved_model_id") else None,
         model_id=str(active_model_payload["model_id"]) if active_model_payload and active_model_payload.get("model_id") else None,
         model_architecture=str(active_model_payload["architecture"]) if active_model_payload and active_model_payload.get("architecture") else None,
         model_dataset_version=str(active_model_payload["dataset_version"]) if active_model_payload and active_model_payload.get("dataset_version") else None,
+        model_stage=str(active_model_payload["model_stage"]) if active_model_payload and active_model_payload.get("model_stage") else None,
         training_scope=str(active_model_payload["training_scope"]) if active_model_payload and active_model_payload.get("training_scope") else None,
+        used_candidate_override=used_candidate_override,
+        used_inference_fallback=used_inference_fallback,
         inference_service_version=inference_service_version,
         prediction_artifact_uri=prediction_artifact_uri,
     )
@@ -601,7 +683,7 @@ def latest_forecast(
     debris_class: str | None = None,
     min_confidence: float = 0.0,
 ) -> ForecastSnapshot | None:
-    run_query = select(ForecastRunModel)
+    run_query = select(ForecastRunModel).join(ForecastStepModel, ForecastStepModel.run_id == ForecastRunModel.id).distinct()
     if region_id is not None:
         run_query = run_query.where(ForecastRunModel.pilot_region == region_id)
     run = db.execute(run_query.order_by(ForecastRunModel.generated_at.desc()).limit(1)).scalar_one_or_none()

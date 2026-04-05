@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
+
+pytestmark = [pytest.mark.integration, pytest.mark.ml, pytest.mark.backfill, pytest.mark.slow]
+
 
 def test_stage2_backfill_and_model_admin_endpoints(client) -> None:
     backfill_response = client.post(
@@ -14,8 +19,17 @@ def test_stage2_backfill_and_model_admin_endpoints(client) -> None:
     assert backfill_response.status_code == 200
     backfill_payload = backfill_response.json()
     assert backfill_payload["region_id"] == "long_island_sound"
+    assert backfill_payload["mode"] == "dataset_only"
     assert backfill_payload["runs_created"] >= 1
+    assert backfill_payload["timestamps_planned"] >= backfill_payload["timestamps_processed"] >= 1
     assert backfill_payload["baseline_artifacts_created"] > 0
+    assert backfill_payload["chunk_count"] >= 1
+    assert backfill_payload["timings"]
+    assert backfill_payload["timings"][0]["baseline_ms"] > 0
+    assert backfill_payload["timings"][0]["artifact_write_ms"] > 0
+
+    latest_response = client.get("/api/forecast/latest", params={"region_id": "long_island_sound"})
+    assert latest_response.status_code == 404
 
     dataset_response = client.post(
         "/api/ml/datasets/export",

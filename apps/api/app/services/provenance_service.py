@@ -26,10 +26,15 @@ def build_forecast_provenance(
     source_notes: list[str],
     baseline_engine: str | None = None,
     baseline_artifact_uri: str | None = None,
+    requested_model_id: str | None = None,
+    resolved_model_id: str | None = None,
     model_id: str | None = None,
     model_architecture: str | None = None,
     model_dataset_version: str | None = None,
+    model_stage: str | None = None,
     training_scope: str | None = None,
+    used_candidate_override: bool = False,
+    used_inference_fallback: bool = False,
     inference_service_version: str | None = None,
     prediction_artifact_uri: str | None = None,
 ) -> ForecastProvenance:
@@ -48,10 +53,15 @@ def build_forecast_provenance(
         source_notes=source_notes,
         baseline_engine=baseline_engine,  # type: ignore[arg-type]
         baseline_artifact_uri=baseline_artifact_uri,
-        model_id=model_id,
+        requested_model_id=requested_model_id,
+        resolved_model_id=resolved_model_id or model_id,
+        model_id=resolved_model_id or model_id,
         model_architecture=model_architecture,  # type: ignore[arg-type]
         model_dataset_version=model_dataset_version,
+        model_stage=model_stage,  # type: ignore[arg-type]
         training_scope=training_scope,  # type: ignore[arg-type]
+        used_candidate_override=used_candidate_override,
+        used_inference_fallback=used_inference_fallback,
         inference_service_version=inference_service_version,
         prediction_artifact_uri=prediction_artifact_uri,
     )

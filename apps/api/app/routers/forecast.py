@@ -21,7 +21,12 @@ router = APIRouter(prefix="/forecast", tags=["forecast"])
 
 @router.post("/run", response_model=ForecastRunResponse)
 def run_forecast_endpoint(request: ForecastRunRequest, db: Session = Depends(get_db)) -> ForecastRunResponse:
-    return run_forecast(request, db)
+    try:
+        return run_forecast(request, db)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/backfill", response_model=HistoricalBackfillResponse)
