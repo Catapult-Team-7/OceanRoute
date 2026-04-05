@@ -200,6 +200,127 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string>("");
   const [actionMessage, setActionMessage] = useState<string>("");
+  const [view, setView] = useState<"home" | "app" | "records">("home");
+  type MissionRecord = {
+    mission_id: string;
+    date: string;
+    collected_kg: number;
+    distance_km: number;
+    hours: number;
+    mode: string;
+    notes?: string | null;
+  };
+  const [recentMissions, setRecentMissions] = useState<MissionRecord[]>([]);
+  const LOCAL_MISSIONS_KEY = "sea_sweep_missions_v1";
+  const [showNewMissionForm, setShowNewMissionForm] = useState(false);
+  const [newMission, setNewMission] = useState<Partial<MissionRecord>>({
+    date: new Date().toISOString(),
+    collected_kg: 0,
+    distance_km: 0,
+    hours: 1,
+    mode: "collection",
+    notes: "",
+  });
+  const [missionFilters, setMissionFilters] = useState<{
+    mode: "all" | "collection" | "recon";
+    minKg: number;
+    from?: string | null;
+    to?: string | null;
+  }>({ mode: "all", minKg: 0, from: null, to: null });
+
+  useEffect(() => {
+    // load persisted missions
+    try {
+      const raw = localStorage.getItem(LOCAL_MISSIONS_KEY);
+      if (raw) {
+        setRecentMissions(JSON.parse(raw));
+      }
+    } catch (e) {
+      // ignore parse errors
+    }
+  }, []);
+
+  // If backend is available and not demo, try loading server-side missions
+  useEffect(() => {
+    if (!health || (health.ingest_mode ?? "live") === "demo") return;
+    void (async () => {
+      try {
+        const serverMissions = await requestJson<MissionRecord[]>('/missions');
+        if (Array.isArray(serverMissions) && serverMissions.length > 0) {
+          setRecentMissions(serverMissions);
+        }
+      } catch (e) {
+        // ignore backend fetch errors; local copy remains
+      }
+    })();
+  }, [health]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_MISSIONS_KEY, JSON.stringify(recentMissions));
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [recentMissions]);
+
+  function addMission(payload: Partial<MissionRecord>) {
+    const mission: MissionRecord = {
+      mission_id: payload.mission_id ?? `M-${Math.floor(Math.random() * 9000) + 1000}`,
+      date: payload.date ?? new Date().toISOString(),
+      collected_kg: Number(payload.collected_kg ?? 0),
+      distance_km: Number(payload.distance_km ?? 0),
+      hours: Number(payload.hours ?? 0.5),
+      mode: payload.mode ?? "collection",
+      notes: payload.notes ?? null,
+    };
+    // Optimistically add locally
+    setRecentMissions((cur) => [mission, ...cur]);
+    setShowNewMissionForm(false);
+    setNewMission({ date: new Date().toISOString(), collected_kg: 0, distance_km: 0, hours: 1, mode: "collection", notes: "" });
+
+    // Try to persist to backend when not in demo mode
+    (async () => {
+      try {
+        if (health && (health.ingest_mode ?? "live") !== "demo") {
+          await requestJson('/missions', {
+            method: 'POST',
+            body: JSON.stringify(mission),
+          });
+        }
+      } catch (err) {
+        // If backend persist fails, keep local copy and notify user
+        setActionMessage('Saved mission locally (failed to persist to server)');
+        setTimeout(() => setActionMessage(''), 4000);
+      }
+    })();
+  }
+
+  function handleNewMissionSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    addMission({
+      mission_id: newMission.mission_id,
+      date: newMission.date,
+      collected_kg: Number(newMission.collected_kg ?? 0),
+      distance_km: Number(newMission.distance_km ?? 0),
+      hours: Number(newMission.hours ?? 0.5),
+      mode: (newMission.mode as "collection" | "recon") ?? "collection",
+      notes: newMission.notes ?? null,
+    });
+  }
+
+  const filteredMissions = recentMissions.filter((m) => {
+    if (missionFilters.mode !== "all" && m.mode !== missionFilters.mode) return false;
+    if (missionFilters.minKg && m.collected_kg < missionFilters.minKg) return false;
+    if (missionFilters.from) {
+      const from = new Date(missionFilters.from);
+      if (new Date(m.date) < from) return false;
+    }
+    if (missionFilters.to) {
+      const to = new Date(missionFilters.to);
+      if (new Date(m.date) > to) return false;
+    }
+    return true;
+  });
 
   useEffect(() => {
     void (async () => {
@@ -232,6 +353,28 @@ export function App() {
     })();
   }, []);
 
+
+  // Observe reveal-on-scroll elements whenever the visible view changes so newly-rendered
+  // elements (like the hero on the Home view) get observed and animate when they enter.
+  useEffect(() => {
+    const els = Array.from(document.querySelectorAll<HTMLElement>(".reveal-on-scroll"));
+    // Reset any existing reveal state so the animation can replay when entering view.
+    els.forEach((el) => el.classList.remove("reveal"));
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("reveal");
+          }
+        });
+      },
+      { threshold: 0.12 },
+    );
+
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [view]);
   useEffect(() => {
     if (!selectedRegionId || regions.length === 0) {
       return;
@@ -419,6 +562,24 @@ export function App() {
     }
   }
 
+  function seedDemoMissions() {
+    if (recentMissions.length > 0) return;
+    const now = new Date();
+    const baseKg = impact?.total_collected_kg ?? 42;
+    const baseDist = impact?.total_distance_km ?? 12.3;
+    const baseHours = Math.max(Math.round((impact?.total_hours ?? 3.2) * 10) / 10, 0.5);
+    const sample: MissionRecord[] = [0, 1, 2].map((i) => ({
+      mission_id: `M-${Math.floor(Math.random() * 9000) + 1000}`,
+      date: new Date(now.getTime() - i * 86400000).toISOString(),
+      collected_kg: Math.round((baseKg / 3) * (1 - i * 0.08) * 10) / 10,
+      distance_km: Math.round((baseDist / 3) * (1 + i * 0.2) * 10) / 10,
+      hours: Math.round((baseHours / 3) * (1 + i * 0.15) * 10) / 10,
+      mode: i % 2 === 0 ? "collection" : "recon",
+      notes: i === 0 ? "Sufficient debris found; crew collected samples." : i === 1 ? "Search only; no collection made." : "Light collection with spot checks.",
+    }));
+    setRecentMissions(sample);
+  }
+
   const routePolyline = buildRoutePolyline(route, forecast, routeForm);
   const activeProvenance = forecast?.provenance ?? null;
   const routeProvenance = route?.forecast_provenance ?? null;
@@ -429,64 +590,192 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">OceanRoute v1</p>
-          <h1>Regional debris response desk</h1>
-          <p className="hero-copy">
-            Tactical cleanup support for the next shift across the active pilot regions. Forecast probable debris
-            concentration zones, see uncertainty, and turn the best cells into a route or reconnaissance plan.
-          </p>
+      <nav className="top-nav" role="navigation" aria-label="Main">
+        <div className="nav-left">
+          <p className="nav-brand">SeaSweep</p>
         </div>
-        <div className="hero-actions">
-          <button className="primary-button" onClick={handleRunForecast} type="button" disabled={loadingForecast}>
-            {loadingForecast ? "Refreshing forecast..." : "Run fresh forecast"}
+        <div className="nav-right">
+          <button
+            type="button"
+            className={`nav-button ${view === "home" ? "active" : ""}`}
+            onClick={() => setView("home")}
+            aria-pressed={view === "home"}
+          >
+            <span className="nav-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 11.5L12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-8.5z" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="nav-label">Home</span>
           </button>
-          <div className="hero-meta">
-            <span className="status-pill">{health?.ingest_mode ?? "auto"} ingest</span>
-            <span className="status-pill">{health?.scheduler_enabled ? "scheduled" : "manual"}</span>
-          </div>
-        </div>
-      </header>
 
-      <section className="summary-strip">
-        <article className="summary-card">
-          <span className="summary-label">Pilot region</span>
-          <strong>{selectedRegion?.name ?? health?.pilot_region ?? "sf_bay_estuary"}</strong>
-          <p>{loadingHealth ? "Checking backend status..." : "Active regional forecast workspace."}</p>
-        </article>
-        <article className="summary-card">
-          <span className="summary-label">Top hotspot</span>
-          <strong>{topLine(forecast)}</strong>
-          <p>
-            {activeProvenance
-              ? `${sourceLabel(activeProvenance)} | ${formatFreshness(activeProvenance.age_minutes)}`
-              : "Run a forecast to populate the ranking."}
-          </p>
-        </article>
-        <article className="summary-card">
-          <span className="summary-label">Kg per vessel-km</span>
-          <strong>{impact ? impact.kg_per_vessel_km.toFixed(2) : "0.00"}</strong>
-          <p>{impact ? `${impact.total_missions} logged mission(s).` : "Impact ledger waiting for field feedback."}</p>
-        </article>
-        <article className="summary-card">
-          <span className="summary-label">Exports</span>
-          <strong>PDF + GeoJSON</strong>
-          <p className="export-links">
-            <a href={`${API_BASE}/export/pdf-brief`} target="_blank" rel="noreferrer">
-              PDF brief
-            </a>
-            <a href={`${API_BASE}/export/geojson?horizon_hour=${filters.horizonHour}`} target="_blank" rel="noreferrer">
-              GeoJSON
-            </a>
-          </p>
-        </article>
-      </section>
+          <button
+            type="button"
+            className={`nav-button ${view === "app" ? "active" : ""}`}
+            onClick={() => setView("app")}
+            aria-pressed={view === "app"}
+          >
+            <span className="nav-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" />
+                <rect x="13" y="3" width="8" height="8" rx="1" fill="currentColor" />
+                <rect x="3" y="13" width="8" height="8" rx="1" fill="currentColor" />
+                <rect x="13" y="13" width="8" height="8" rx="1" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="nav-label">Dashboard</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-button ${view === "records" ? "active" : ""}`}
+            onClick={() => setView("records")}
+            aria-pressed={view === "records"}
+            title="Records & ledger"
+          >
+            <span className="nav-icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 5h16v2H4V5zm0 4h10v2H4V9zm0 4h16v6H4v-6z" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="nav-label">Records</span>
+          </button>
+        </div>
+      </nav>
+
+      
 
       {error ? <div className="error-banner">{error}</div> : null}
       {actionMessage ? <div className="success-banner">{actionMessage}</div> : null}
 
-      <main className="dashboard-grid">
+      {view === "home" ? (
+        <>
+          <header className="hero reveal-on-scroll">
+            <div>
+              <p className="eyebrow">SeaSweep</p>
+              <h1>Protecting our coasts by sweeping debris — operationally</h1>
+              <p className="hero-copy">
+                SeaSweep connects forecasts, routes, and field feedback into a single operator dashboard so teams can
+                find, collect, and learn from floating debris more effectively. Fast forecasts, clear uncertainty, and
+                mission-grade routes for real crews.
+              </p>
+            </div>
+            <div className="hero-actions">
+              <button className="primary-button" onClick={() => setView("app")} type="button">
+                Get started
+              </button>
+              <div className="hero-meta">
+                <span className="status-pill">{health?.ingest_mode ?? "auto"} ingest</span>
+                <span className="status-pill">{health?.scheduler_enabled ? "scheduled" : "manual"}</span>
+              </div>
+            </div>
+          </header>
+
+          <section className="objectives reveal-on-scroll">
+            <div className="about-inner">
+              <h2>Our objective</h2>
+              <p>
+                SeaSweep's mission is to make coastal cleanup faster and data-driven. We focus on delivering
+                operational forecasts, clear uncertainty signals for decision making, and practical tools that turn
+                forecasts into short, single-vessel missions that crews can execute today.
+              </p>
+              <div className="kpi-grid">
+                <article>
+                  <strong>Target reduction</strong>
+                  <p>Reduce floating debris in pilot regions by <strong>30%</strong> per season (operational target)</p>
+                </article>
+                <article>
+                  <strong>Response time</strong>
+                  <p>Enable mission planning in under <strong>15 minutes</strong> from forecast to route</p>
+                </article>
+                <article>
+                  <strong>Mission ROI</strong>
+                  <p>Maximize kilograms collected per vessel-hour while limiting false-search distance</p>
+                </article>
+              </div>
+              <h3>How it works</h3>
+              <ol>
+                <li>Run a forecast for your pilot region and horizon.</li>
+                <li>Filter by confidence and debris class to focus operations.</li>
+                <li>Optimize a single-vessel route and collect mission feedback to improve models.</li>
+              </ol>
+            </div>
+            {/* New mission form relocated to Records page */}
+          </section>
+
+          <section className="about reveal-on-scroll">
+            <div className="about-inner">
+              <h2>About SeaSweep</h2>
+              <p>
+                SeaSweep is dedicated to reducing marine debris by making field operations smarter. We provide
+                confidence-aware forecasts, mission planning tools, and a feedback loop that turns field observations
+                into measurable impact.
+              </p>
+              <ul className="mission-list">
+                <li>Fast, actionable forecasts for coastal operators</li>
+                <li>Route planning tuned for single-vessel collection missions</li>
+                <li>Operational feedback and impact accounting to improve models</li>
+              </ul>
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="summary-strip">
+            <article className="summary-card">
+              <span className="summary-label">Pilot region</span>
+              <strong>{selectedRegion?.name ?? health?.pilot_region ?? "sf_bay_estuary"}</strong>
+              <p>{loadingHealth ? "Checking backend status..." : "Active regional forecast workspace."}</p>
+            </article>
+            <article className="summary-card">
+              <span className="summary-label">Top hotspot</span>
+              <strong>{topLine(forecast)}</strong>
+              <p>
+                {activeProvenance
+                  ? `${sourceLabel(activeProvenance)} | ${formatFreshness(activeProvenance.age_minutes)}`
+                  : "Run a forecast to populate the ranking."}
+              </p>
+            </article>
+            <article className="summary-card">
+              <span className="summary-label">Kg per vessel-km</span>
+              <strong>{impact ? impact.kg_per_vessel_km.toFixed(2) : "0.00"}</strong>
+              <p>{impact ? `${impact.total_missions} logged mission(s).` : "Impact ledger waiting for field feedback."}</p>
+            </article>
+            <article className="summary-card">
+              <span className="summary-label">Exports</span>
+              <strong>PDF + GeoJSON</strong>
+              <p className="export-links">
+                <a href={`${API_BASE}/export/pdf-brief`} target="_blank" rel="noreferrer">
+                  PDF brief
+                </a>
+                <a href={`${API_BASE}/export/geojson?horizon_hour=${filters.horizonHour}`} target="_blank" rel="noreferrer">
+                  GeoJSON
+                </a>
+              </p>
+            </article>
+          </section>
+
+          {/* Dashboard banner containing broadcast/run action and quick provenance info */}
+          <div className="dashboard-banner">
+            <div className="dashboard-banner-inner">
+              <button
+                className="primary-button"
+                onClick={handleRunForecast}
+                type="button"
+                disabled={loadingForecast}
+              >
+                {loadingForecast ? "Broadcasting..." : "Broadcast forecast"}
+              </button>
+              <div className="banner-meta">
+                {activeProvenance ? (
+                  <span>Last run: {formatTimestamp(activeProvenance.generated_at)} — {modelLabel(activeProvenance)}</span>
+                ) : (
+                  <span>No stored forecast yet. Run a broadcast to populate data.</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <main className="dashboard-grid">
         <section className="panel panel-map">
           <div className="panel-header">
             <div>
@@ -541,21 +830,23 @@ export function App() {
               </label>
               <label>
                 Confidence floor
-                <input
-                  aria-label="Confidence floor"
-                  type="range"
-                  min="0"
-                  max="0.8"
-                  step="0.05"
-                  value={filters.minConfidence}
-                  onChange={(event) =>
-                    setFilters((current) => ({
-                      ...current,
-                      minConfidence: Number(event.target.value),
-                    }))
-                  }
-                />
-                <span>{formatPercent(filters.minConfidence)}</span>
+                <div className="range-control">
+                  <input
+                    aria-label="Confidence floor"
+                    type="range"
+                    min="0"
+                    max="0.8"
+                    step="0.05"
+                    value={filters.minConfidence}
+                    onChange={(event) =>
+                      setFilters((current) => ({
+                        ...current,
+                        minConfidence: Number(event.target.value),
+                      }))
+                    }
+                  />
+                  <span className="range-value">{formatPercent(filters.minConfidence)}</span>
+                </div>
               </label>
             </div>
           </div>
@@ -756,131 +1047,237 @@ export function App() {
           )}
         </section>
 
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Mission feedback</h2>
-              <p>Write back what the crew found so the forecast and impact ledger can learn.</p>
-            </div>
-          </div>
-          <form className="feedback-form" onSubmit={handleSubmitFeedback}>
-            <label>
-              Found status
-              <select
-                aria-label="Found status"
-                value={feedback.foundStatus}
-                onChange={(event) =>
-                  setFeedback((current) => ({
-                    ...current,
-                    foundStatus: event.target.value as "found" | "not_found",
-                  }))
-                }
-              >
-                <option value="found">Found debris</option>
-                <option value="not_found">No debris</option>
-              </select>
-            </label>
-            <label>
-              Estimated kg observed
-              <input
-                aria-label="Estimated kilograms"
-                type="number"
-                min="0"
-                step="0.5"
-                value={feedback.estimatedKg}
-                onChange={(event) =>
-                  setFeedback((current) => ({ ...current, estimatedKg: Number(event.target.value) }))
-                }
-              />
-            </label>
-            <label>
-              Collected kg
-              <input
-                aria-label="Collected kilograms"
-                type="number"
-                min="0"
-                step="0.5"
-                value={feedback.collectedKg}
-                onChange={(event) =>
-                  setFeedback((current) => ({ ...current, collectedKg: Number(event.target.value) }))
-                }
-              />
-            </label>
-            <label>
-              Photo URL
-              <input
-                aria-label="Photo URL"
-                type="url"
-                value={feedback.photoUrl}
-                onChange={(event) =>
-                  setFeedback((current) => ({ ...current, photoUrl: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              Route deviation reason
-              <textarea
-                aria-label="Route deviation reason"
-                value={feedback.routeDeviationReason}
-                onChange={(event) =>
-                  setFeedback((current) => ({
-                    ...current,
-                    routeDeviationReason: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Crew notes
-              <textarea
-                aria-label="Crew notes"
-                value={feedback.note}
-                onChange={(event) =>
-                  setFeedback((current) => ({ ...current, note: event.target.value }))
-                }
-              />
-            </label>
-            <button className="primary-button" type="submit" disabled={!route || submittingFeedback}>
-              {submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
-            </button>
-            {feedbackMessage ? <p className="success-banner">{feedbackMessage}</p> : null}
-          </form>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Impact ledger</h2>
-              <p>Operational metrics over logged missions.</p>
-            </div>
-          </div>
-          <div className="impact-grid">
-            <article>
-              <span>Kg per hour</span>
-              <strong>{impact ? impact.kg_per_hour.toFixed(2) : "0.00"}</strong>
-            </article>
-            <article>
-              <span>Hotspot precision</span>
-              <strong>{impact ? formatPercent(impact.hotspot_precision) : "0%"}</strong>
-            </article>
-            <article>
-              <span>Mission hit rate</span>
-              <strong>{impact ? formatPercent(impact.mission_hit_rate) : "0%"}</strong>
-            </article>
-            <article>
-              <span>False-search km</span>
-              <strong>{impact ? impact.false_search_distance_km.toFixed(1) : "0.0"}</strong>
-            </article>
-          </div>
-          {forecast?.source_notes.length ? (
-            <div className="source-notes">
-              {forecast.source_notes.map((note) => (
-                <p key={note}>{note}</p>
-              ))}
-            </div>
-          ) : null}
-        </section>
+        {/* Mission feedback and Impact ledger moved to Records page */}
       </main>
+        </>
+      )}
+      {view === "records" ? (
+        <main className="records-grid">
+          <div className="records-intro reveal-on-scroll">
+            <div className="about-inner">
+              <h2>Records & Impact ledger</h2>
+              <p>
+                A single place to review logged missions, add crew feedback, and track operational impact. Entries
+                here feed the model training loop and the impact dashboard.
+              </p>
+              <div className="records-stats">
+                <div>
+                  <strong>{impact?.total_missions ?? 0}</strong>
+                  <span>Logged missions</span>
+                </div>
+                <div>
+                  <strong>{impact ? impact.kg_per_vessel_km.toFixed(2) : "0.00"}</strong>
+                  <span>Kg / vessel-km</span>
+                </div>
+                <div>
+                  <strong>{impact ? impact.kg_per_hour.toFixed(2) : "0.00"}</strong>
+                  <span>Kg / hour</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Mission feedback</h2>
+                <p>Write back what the crew found so the forecast and impact ledger can learn.</p>
+              </div>
+            </div>
+            <form className="feedback-form" onSubmit={handleSubmitFeedback}>
+              <label>
+                Found status
+                <select
+                  aria-label="Found status"
+                  value={feedback.foundStatus}
+                  onChange={(event) =>
+                    setFeedback((current) => ({
+                      ...current,
+                      foundStatus: event.target.value as "found" | "not_found",
+                    }))
+                  }
+                >
+                  <option value="found">Found debris</option>
+                  <option value="not_found">No debris</option>
+                </select>
+              </label>
+              <label>
+                Estimated kg observed
+                <input
+                  aria-label="Estimated kilograms"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={feedback.estimatedKg}
+                  onChange={(event) => setFeedback((current) => ({ ...current, estimatedKg: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                Collected kg
+                <input
+                  aria-label="Collected kilograms"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={feedback.collectedKg}
+                  onChange={(event) => setFeedback((current) => ({ ...current, collectedKg: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                Photo URL
+                <input
+                  aria-label="Photo URL"
+                  type="url"
+                  value={feedback.photoUrl}
+                  onChange={(event) => setFeedback((current) => ({ ...current, photoUrl: event.target.value }))}
+                />
+              </label>
+              <label>
+                Route deviation reason
+                <textarea
+                  aria-label="Route deviation reason"
+                  value={feedback.routeDeviationReason}
+                  onChange={(event) => setFeedback((current) => ({ ...current, routeDeviationReason: event.target.value }))}
+                />
+              </label>
+              <label>
+                Crew notes
+                <textarea aria-label="Crew notes" value={feedback.note} onChange={(event) => setFeedback((current) => ({ ...current, note: event.target.value }))} />
+              </label>
+              <button className="primary-button" type="submit" disabled={!route || submittingFeedback}>
+                {submittingFeedback ? "Saving feedback..." : "Save mission feedback"}
+              </button>
+              {feedbackMessage ? <p className="success-banner">{feedbackMessage}</p> : null}
+            </form>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Impact ledger</h2>
+                <p>Operational metrics over logged missions.</p>
+              </div>
+            </div>
+            <div className="impact-grid">
+              <article>
+                <span>Kg per hour</span>
+                <strong>{impact ? impact.kg_per_hour.toFixed(2) : "0.00"}</strong>
+              </article>
+              <article>
+                <span>Hotspot precision</span>
+                <strong>{impact ? formatPercent(impact.hotspot_precision) : "0%"}</strong>
+              </article>
+              <article>
+                <span>Mission hit rate</span>
+                <strong>{impact ? formatPercent(impact.mission_hit_rate) : "0%"}</strong>
+              </article>
+              <article>
+                <span>False-search km</span>
+                <strong>{impact ? impact.false_search_distance_km.toFixed(1) : "0.0"}</strong>
+              </article>
+            </div>
+            {forecast?.source_notes.length ? (
+              <div className="source-notes">
+                {forecast.source_notes.map((note) => (
+                  <p key={note}>{note}</p>
+                ))}
+              </div>
+            ) : null}
+          </section>
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Logged missions</h2>
+                <p>Recent missions and quick details — use this to review past activity.</p>
+              </div>
+              <div>
+                {recentMissions.length === 0 ? (
+                  <button className="secondary-button" type="button" onClick={seedDemoMissions}>
+                    Load demo missions
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="missions-toolbar">
+              <div className="filter-row">
+                <label>
+                  Mode
+                  <select
+                    value={missionFilters.mode}
+                    onChange={(e) => setMissionFilters((c) => ({ ...c, mode: e.target.value as any }))}
+                  >
+                    <option value="all">All</option>
+                    <option value="collection">Collection</option>
+                    <option value="recon">Recon</option>
+                  </select>
+                </label>
+                <label>
+                  Min kg
+                  <input
+                    type="number"
+                    min="0"
+                    value={missionFilters.minKg}
+                    onChange={(e) => setMissionFilters((c) => ({ ...c, minKg: Number(e.target.value) }))}
+                  />
+                </label>
+                <label>
+                  From
+                  <input
+                    type="date"
+                    value={missionFilters.from ?? ""}
+                    onChange={(e) => setMissionFilters((c) => ({ ...c, from: e.target.value || null }))}
+                  />
+                </label>
+                <label>
+                  To
+                  <input
+                    type="date"
+                    value={missionFilters.to ?? ""}
+                    onChange={(e) => setMissionFilters((c) => ({ ...c, to: e.target.value || null }))}
+                  />
+                </label>
+                <div>
+                  <button className="secondary-button" type="button" onClick={() => setMissionFilters({ mode: "all", minKg: 0, from: null, to: null })}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                {showNewMissionForm ? (
+                  <button className="secondary-button" type="button" onClick={() => setShowNewMissionForm(false)}>
+                    Cancel
+                  </button>
+                ) : (
+                  <button className="primary-button" type="button" onClick={() => setShowNewMissionForm(true)}>
+                    New mission
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="missions-list">
+              {filteredMissions.length === 0 ? (
+                <p className="empty-state">No missions match filters. Load demo missions or add one.</p>
+              ) : (
+                filteredMissions.map((m) => (
+                  <article className="mission-card" key={m.mission_id}>
+                    <div className="mission-row">
+                      <div>
+                        <strong>{m.mission_id}</strong>
+                        <div className="muted">{new Date(m.date).toLocaleString()}</div>
+                      </div>
+                      <div className="mission-stats">
+                        <span>{m.collected_kg} kg</span>
+                        <span>{m.distance_km} km</span>
+                        <span>{m.hours}h</span>
+                      </div>
+                    </div>
+                    <p className="mission-notes">{m.notes}</p>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+        </main>
+      ) : null}
     </div>
   );
 }
