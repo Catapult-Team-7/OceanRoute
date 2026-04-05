@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from app.db import SessionLocal
-from app.models import ForecastRunModel, ForecastStepModel, ObservationModel, RoutePlanModel
+from app.models import ForecastRunModel, ForecastStepModel, ModelRegistryModel, ObservationModel, RoutePlanModel
+from app.services.data_lake_service import read_tensor
 
 
 pytestmark = pytest.mark.integration
@@ -154,6 +157,103 @@ def test_auto_ingest_failure_is_exposed_as_sample_fallback(client, monkeypatch) 
 
     latest_payload = client.get("/api/forecast/latest").json()
     assert any("fell back to sample" in note for note in latest_payload["source_notes"])
+
+
+def test_deep_champion_forecast_uses_same_run_baseline_lookback_artifacts(
+    client,
+    db_session,
+    monkeypatch,
+    tiny_dataset_export_path,
+) -> None:
+    model_id = "champion-deep-flush"
+    artifact_root = tiny_dataset_export_path / "deep-runtime-flush"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    db_session.add(
+        ModelRegistryModel(
+            model_id=model_id,
+            region_id="sf_bay_estuary",
+            created_at=datetime.now(timezone.utc),
+            architecture="convlstm",
+            status="completed",
+            stage="champion",
+            is_active=True,
+            training_scope="per_region",
+            artifact_path="C:\\champion\\metadata.json",
+            dataset_id="fixture-dataset",
+            dataset_version="v2",
+            trained_regions=["sf_bay_estuary"],
+            compatible_regions=["sf_bay_estuary"],
+            horizons=[24, 48, 72],
+            input_channels=[
+                "current_u",
+                "current_v",
+                "wind_u",
+                "wind_v",
+                "baseline_density",
+                "baseline_ensemble_spread",
+                "baseline_beaching_fraction",
+                "stokes_magnitude",
+                "windage",
+                "land_mask",
+                "coastline_mask",
+                "region_mask",
+            ],
+            output_heads=["hotspot_probability", "expected_kg", "uncertainty"],
+            normalization_stats_path=None,
+            feature_schema_path=None,
+            best_checkpoint_path=None,
+            checkpoint_path=None,
+            export_artifact_path="C:\\champion\\model.ts",
+            evaluation_path=None,
+            framework="pytorch_lightning",
+            metrics_json={},
+        )
+    )
+    db_session.commit()
+
+    def _fake_predict(request, db):
+        x_tensor = read_tensor(request.feature_artifact_uri)
+        height, width = x_tensor.shape[-2:]
+        horizon_count = len(request.target_horizons)
+        probability_path = artifact_root / "probability.npy"
+        kilograms_path = artifact_root / "kilograms.npy"
+        uncertainty_path = artifact_root / "uncertainty.npy"
+        np.save(probability_path, np.full((horizon_count, height, width), 0.63, dtype=np.float32))
+        np.save(kilograms_path, np.full((horizon_count, height, width), 2.8, dtype=np.float32))
+        np.save(uncertainty_path, np.full((horizon_count, height, width), 0.18, dtype=np.float32))
+        return SimpleNamespace(
+            artifact=SimpleNamespace(
+                manifest_uri=str(artifact_root / "prediction.json"),
+                hotspot_probability_uri=str(probability_path),
+                expected_kg_uri=str(kilograms_path),
+                uncertainty_uri=str(uncertainty_path),
+                target_horizons=list(request.target_horizons),
+                training_scope="per_region",
+                inference_service_version="test",
+            ),
+            loaded_model_id=model_id,
+            used_fallback=False,
+        )
+
+    monkeypatch.setattr("app.services.forecast_service.predict_with_inference_service", _fake_predict)
+
+    response = client.post(
+        "/api/forecast/run",
+        json={
+            "region_id": "sf_bay_estuary",
+            "horizon_hours": 24,
+            "debris_classes": ["low"],
+            "seed": 4,
+            "source_mode": "sample",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["resolved_model_id"] == model_id
+    assert payload["summary"]["used_inference_fallback"] is False
+    assert payload["summary"].get("model_fallback_reason") is None
+    assert payload["provenance"]["used_inference_fallback"] is False
+    assert payload["provenance"]["model_architecture"] == "convlstm"
 
 
 def test_mission_records_endpoints_round_trip(client) -> None:

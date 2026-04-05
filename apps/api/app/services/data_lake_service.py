@@ -74,7 +74,37 @@ def _write_tensor(path: Path, array: np.ndarray) -> str:
     return str(path.with_suffix(".npy"))
 
 
+def _tensor_uri_exists(uri: str | None) -> bool:
+    if not uri:
+        return False
+    base_uri = uri.split("::", maxsplit=1)[0]
+    return Path(base_uri).exists()
+
+
 def read_tensor(uri: str) -> np.ndarray:
+    def _read_zarr_single_array(path: Path) -> np.ndarray | None:
+        if not ZARR_AVAILABLE:
+            return None
+        try:
+            loaded = zarr.load(str(path))
+            return np.asarray(loaded, dtype=np.float32)
+        except Exception:
+            pass
+        try:
+            opened = zarr.open(str(path), mode="r")
+            if hasattr(opened, "shape"):
+                return np.asarray(opened, dtype=np.float32)
+        except Exception:
+            pass
+        try:
+            group = zarr.open_group(str(path), mode="r")
+            array_keys = list(group.array_keys())
+            if len(array_keys) == 1:
+                return np.asarray(group[array_keys[0]], dtype=np.float32)
+        except Exception:
+            return None
+        return None
+
     def _legacy_group_fallback(group_path: Path, array_name: str) -> np.ndarray | None:
         candidates = [
             group_path / f"{array_name}.npy",
@@ -102,8 +132,10 @@ def read_tensor(uri: str) -> np.ndarray:
         raise ValueError(f"Unsupported tensor-group artifact URI: {uri}")
     path = Path(uri)
     if path.suffix == ".zarr" and ZARR_AVAILABLE:
-        loaded = zarr.load(str(path))
-        return np.asarray(loaded, dtype=np.float32)
+        loaded = _read_zarr_single_array(path)
+        if loaded is not None:
+            return loaded
+        raise ValueError(f"Unsupported tensor artifact URI: {uri}")
     if path.suffix == ".npy":
         return np.load(path)
     raise ValueError(f"Unsupported tensor artifact URI: {uri}")
@@ -183,8 +215,13 @@ def write_static_masks(region_id: str, *, timestamp: datetime | None = None) -> 
     year, month = _month_bucket(bucket_time)
     cache_key = (region_id, year, month)
     cached = _STATIC_MASK_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is not None and all(
+        _tensor_uri_exists(cached.get(key))
+        for key in ("shoreline_mask_uri", "restricted_mask_uri", "bathymetry_mask_uri")
+    ):
         return dict(cached)
+    if cached is not None:
+        _STATIC_MASK_CACHE.pop(cache_key, None)
     base = _safe_path("features", "static", region_id, year, month)
     shoreline_uri = _existing_tensor_path(base / "shoreline_mask")
     restricted_uri = _existing_tensor_path(base / "restricted_mask")

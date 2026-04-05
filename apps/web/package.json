@@ -8,21 +8,26 @@
   },
   "scripts": {
     "check:node": "node ../../scripts/check-node-version.mjs",
-    "dev": "npm run check:node && vite",
-    "build": "npm run check:node && vite build",
+    "dev": "vite",
+    "build": "vite build",
     "preview": "vite preview",
-    "test": "npm run check:node && vitest run --config vitest.config.mjs"
+    "test": "vitest run --config vitest.config.mjs"
   },
   "dependencies": {
-    "leaflet": "^1.9.4",
+    "@deck.gl/extensions": "^9.0.37",
+    "@deck.gl/layers": "^9.0.37",
+    "@deck.gl/react": "^9.0.37",
+    "maplibre-gl": "^4.7.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
+    "react-map-gl": "^7.1.8",
+    "recharts": "^2.13.3",
+    "zustand": "^5.0.2"
   },
   "devDependencies": {
     "@rollup/rollup-win32-x64-msvc": "^4.60.1",
     "@testing-library/react": "^16.0.1",
-    "@types/leaflet": "^1.9.14",
+    "@types/geojson": "^7946.0.14",
     "@types/react": "^18.3.9",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

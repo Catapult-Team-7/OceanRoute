@@ -1,4 +1,5 @@
 export type DebrisClass = "low" | "high";
+export type DebrisFilter = DebrisClass | "all";
 export type RecommendedMode = "collection" | "recon";
 export type SourceMode = "auto" | "sample" | "live";
 export type SourceModeUsed = "sample" | "live" | "hybrid";
@@ -6,6 +7,31 @@ export type BaselineEngine = "pygnome" | "custom_particle";
 export type ModelArchitecture = "linear_residual" | "temporal_unet" | "convlstm";
 export type TrainingScope = "shared" | "per_region";
 export type ModelStage = "candidate" | "champion" | "archived";
+export type TrainingStatus = "pending" | "completed" | "failed";
+export type DashboardView = "mission" | "ml" | "progress";
+
+export interface ForecastFilters {
+  horizonHour: number;
+  debrisClass: DebrisFilter;
+  minConfidence: number;
+}
+
+export interface RouteFormState {
+  missionHours: number;
+  vesselSpeedKmh: number;
+  fuelBurnLph: number;
+  depotLat: number;
+  depotLon: number;
+}
+
+export interface FeedbackState {
+  foundStatus: "found" | "not_found";
+  estimatedKg: number;
+  collectedKg: number;
+  photoUrl: string;
+  note: string;
+  routeDeviationReason: string;
+}
 
 export interface HealthStatus {
   status: string;
@@ -160,4 +186,101 @@ export interface ImpactDashboard {
   false_search_distance_km: number;
   mission_hit_rate: number;
   latest_updated_at: string | null;
+}
+
+export interface DatasetArtifact {
+  dataset_id: string;
+  region_id: string;
+  created_at: string;
+  dataset_version: string;
+  label_type: "hotspot_presence" | "expected_kg";
+  sample_count: number;
+  feature_count: number;
+  feature_names: string[];
+  artifact_path: string;
+  zarr_uri?: string | null;
+  parquet_index_uri?: string | null;
+  manifest_path?: string | null;
+  splits_path?: string | null;
+  feature_stats_path?: string | null;
+  metadata_path?: string | null;
+  split_counts: Record<string, number>;
+  schema_versions: Record<string, string>;
+  region_ids: string[];
+  horizons: number[];
+  input_channels: string[];
+  target_channels: string[];
+  tensor_shapes: Record<string, number[]>;
+  metadata: Record<string, unknown>;
+}
+
+export interface ModelRegistryEntry {
+  model_id: string;
+  region_id: string;
+  created_at: string;
+  architecture: ModelArchitecture;
+  status: TrainingStatus;
+  stage: ModelStage;
+  is_active: boolean;
+  training_scope: TrainingScope;
+  artifact_path: string;
+  dataset_id: string;
+  dataset_version?: string | null;
+  trained_regions: string[];
+  compatible_regions: string[];
+  horizons: number[];
+  input_channels: string[];
+  output_heads: string[];
+  normalization_stats_path?: string | null;
+  feature_schema_path?: string | null;
+  best_checkpoint_path?: string | null;
+  checkpoint_path?: string | null;
+  export_artifact_path?: string | null;
+  export_format?: "trace" | "script" | "json" | null;
+  evaluation_path?: string | null;
+  framework?: string | null;
+  metrics: Record<string, unknown>;
+}
+
+export interface ModelTrainResponse {
+  training_run_id: string;
+  model: ModelRegistryEntry;
+  metrics: Record<string, unknown>;
+}
+
+export interface ModelEvaluateResponse {
+  model_id: string;
+  region_id: string;
+  stage: ModelStage;
+  artifact_path: string;
+  export_format?: "trace" | "script" | "json" | null;
+  metrics: Record<string, unknown>;
+  evaluation_path: string;
+}
+
+export interface ModelPromotionResponse {
+  promoted_model_id: string | null;
+  previous_model_id: string | null;
+  region_id: string;
+  reason: string;
+  promoted: boolean;
+}
+
+export interface MissionRecord {
+  mission_id: string;
+  date: string;
+  collected_kg: number;
+  distance_km: number;
+  hours: number;
+  mode: RecommendedMode;
+  notes?: string | null;
+}
+
+export interface MlTrainFormValues {
+  datasetId: string;
+  architecture: ModelArchitecture;
+  trainingScope: TrainingScope;
+  epochs: number;
+  batchSize: number;
+  numWorkers: number;
 }

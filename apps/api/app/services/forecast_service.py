@@ -431,6 +431,10 @@ def run_forecast(
     prediction_artifact_uri: str | None = None
     inference_service_version: str | None = None
     if active_model_entry is not None and active_model_entry.architecture in {"temporal_unet", "convlstm"}:
+        # Baseline artifacts are added to the current session during the baseline loop above.
+        # This repo uses `autoflush=False`, so we must flush before trying to read the freshly
+        # persisted lookback artifacts back through SQL for deep runtime feature assembly.
+        db.flush()
         for debris_class in request.debris_classes:
             try:
                 if active_model_contract_payload is None:
