@@ -348,11 +348,7 @@ export default function OceanMap() {
   const rawRouteTargets = useMemo(
     () =>
       [...(trashData?.hotspots || [])]
-        .filter(
-          (target) =>
-            target.nearest_port ||
-            (Array.isArray(target.metadata?.transport_path) && target.metadata.transport_path.length > 1)
-        )
+        .filter((target) => target.nearest_port)
         .sort(
           (a, b) =>
             ((b.metadata?.route_priority || 0) + (b.intensity || 0)) -
@@ -371,12 +367,7 @@ export default function OceanMap() {
       const seenTransportOrigins = new Set();
       const selected = [];
       for (const item of [...rawRouteTargets]
-        .filter(
-          (target) =>
-            target.routeTarget ||
-            target.nearest_port ||
-            (Array.isArray(target.metadata?.transport_path) && target.metadata.transport_path.length > 1)
-        )
+        .filter((target) => target.routeTarget || target.nearest_port)
         .sort((a, b) => routeStrength(b) - routeStrength(a))) {
         if (!item.routeTarget) {
           const path = item.metadata?.transport_path || [];
@@ -415,6 +406,9 @@ export default function OceanMap() {
               ? item.metadata.transport_path
               : null;
           const routeTarget = item.routeTarget || item.nearest_port || null;
+          if (!routeTarget) {
+            return [];
+          }
           const path = routeTarget
             ? [
                 ...(transportPath || [[item.lon, item.lat]]),
@@ -436,7 +430,7 @@ export default function OceanMap() {
               ? `${item.label} to ${routeTarget.name}`
               : `${item.label} current transport`,
             weakening: item.weakening || item.metadata?.weakening_score || 0,
-            routeMode: routeTarget ? "port" : "transport",
+            routeMode: "port",
           }));
         })
         .filter((item) => item.path.length > 1),
@@ -584,7 +578,7 @@ export default function OceanMap() {
           (target.routePriority || 0) * 34;
         const areaKm2 = Math.PI * radiusKm * radiusKm;
         const color = zoneColor("trash_zone", score);
-        const routeName = target.routeTarget?.name || target.nearest_port?.name || "Current transport corridor";
+        const routeName = target.routeTarget?.name || target.nearest_port?.name || "No verified port route available";
         const transportPath = target.metadata?.transport_path || [];
         const lastPoint = transportPath[transportPath.length - 1] || [target.lon, target.lat];
         const firstPoint = transportPath[0] || [target.lon, target.lat];
@@ -792,7 +786,7 @@ export default function OceanMap() {
             {verifiedMap && prioritySummary.degradationTarget ? (
               <small className="map-brief-subcopy">
                 Hover any zone to inspect severity, area of effect, and routing context. Top route target:{" "}
-                {anchoredTrashTargets[0]?.routeTarget?.name || "current-transport route"}
+                {routedTrashTargets[0]?.routeTarget?.name || "no verified port route available"}
               </small>
             ) : (
               <small className="map-brief-subcopy">
@@ -858,7 +852,7 @@ export default function OceanMap() {
         <div className="map-legend-row">
           <span className="legend-swatch legend-swatch-route" />
           <span>Recovery route</span>
-          <small>orange = current transport, pale gold = port corridor</small>
+          <small>shown only when a real port is resolved from the live port source</small>
         </div>
       </div>
       {!verifiedMap ? (

@@ -36,7 +36,7 @@ def _extract_number(value: Any) -> float | None:
 
 
 def _extract_port_name(attributes: dict[str, Any]) -> str:
-    for key in ("PORT_NAME", "MAIN_PORT_NAME", "PORT", "NAME", "PORT_NM"):
+    for key in ("main_port_name", "port_name", "port", "name", "port_nm", "MAIN_PORT_NAME", "PORT_NAME", "PORT", "NAME", "PORT_NM"):
         value = attributes.get(key)
         if value:
             return str(value)
@@ -44,7 +44,7 @@ def _extract_port_name(attributes: dict[str, Any]) -> str:
 
 
 def _extract_country(attributes: dict[str, Any]) -> str | None:
-    for key in ("COUNTRY", "COUNTRY_NAME", "CTRY_NAME", "NATION"):
+    for key in ("country", "country_name", "ctry_name", "nation", "wpi_cc", "COUNTRY", "COUNTRY_NAME", "CTRY_NAME", "NATION", "WPI_CC"):
         value = attributes.get(key)
         if value:
             return str(value)
@@ -61,11 +61,11 @@ def _extract_lat_lon(feature: dict[str, Any]) -> tuple[float, float] | None:
     attributes = feature.get("attributes") or {}
     lat = None
     lon = None
-    for key in ("LATITUDE", "LAT", "Y"):
+    for key in ("latitude", "lat", "y", "LATITUDE", "LAT", "Y"):
         lat = _extract_number(attributes.get(key))
         if lat is not None:
             break
-    for key in ("LONGITUDE", "LON", "LONG", "X"):
+    for key in ("longitude", "lon", "long", "x", "LONGITUDE", "LON", "LONG", "X"):
         lon = _extract_number(attributes.get(key))
         if lon is not None:
             break
@@ -86,14 +86,7 @@ def fetch_world_ports(
     timeout: int = 25,
 ) -> list[PortRecord]:
     query_url = feature_service_url.rstrip("/") + "/query"
-    where = "1=1"
-    if None not in {min_lat, max_lat, min_lon, max_lon}:
-        where = (
-            f"LATITUDE >= {min_lat} AND LATITUDE <= {max_lat} AND "
-            f"LONGITUDE >= {min_lon} AND LONGITUDE <= {max_lon}"
-        )
-
-    def _query(payload_where: str) -> dict:
+    def _query(payload_where: str, payload_offset: int, payload_limit: int) -> dict:
         response = requests.get(
             query_url,
             params={
@@ -101,8 +94,8 @@ def fetch_world_ports(
                 "outFields": "*",
                 "returnGeometry": "true",
                 "f": "json",
-                "resultRecordCount": max(1, min(limit, 500)),
-                "resultOffset": max(0, int(offset)),
+                "resultRecordCount": max(1, min(payload_limit, 250)),
+                "resultOffset": max(0, int(payload_offset)),
             },
             timeout=timeout,
             verify=False,
@@ -110,30 +103,139 @@ def fetch_world_ports(
         response.raise_for_status()
         return response.json()
 
-    payload = _query(where)
-    features = payload.get("features", [])
-    if not features and where != "1=1":
-        payload = _query("1=1")
-        features = payload.get("features", [])
-
     ports: list[PortRecord] = []
+    seen: set[tuple[str, float, float]] = set()
+    page_size = 200
+    current_offset = max(0, int(offset))
+    max_pages = 30
+    for _ in range(max_pages):
+        payload = _query("1=1", current_offset, page_size)
+        features = payload.get("features", [])
+        if not features:
+            break
+        current_offset += len(features)
+        for feature in features:
+            attributes = feature.get("attributes") or {}
+            lat_lon = _extract_lat_lon(feature)
+            if lat_lon is None:
+                continue
+            lat, lon = lat_lon
+            if min_lat is not None and lat < min_lat:
+                continue
+            if max_lat is not None and lat > max_lat:
+                continue
+            if min_lon is not None and max_lon is not None:
+                if min_lon <= max_lon:
+                    if lon < min_lon or lon > max_lon:
+                        continue
+                elif not (lon >= min_lon or lon <= max_lon):
+                    continue
+            name = _extract_port_name(attributes)
+            if not name or name == "Unknown port":
+                continue
+            key = (name, round(lat, 4), round(lon, 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            ports.append(
+                PortRecord(
+                    name=name,
+                    country=_extract_country(attributes),
+                    lat=lat,
+                    lon=lon,
+                    harbor_size=str(attributes.get("harbor_size_code") or attributes.get("harb_size") or attributes.get("HARBOR_SIZE") or attributes.get("HARB_SIZE") or "") or None,
+                    harbor_type=str(attributes.get("harbor_type_code") or attributes.get("harb_type") or attributes.get("HARBOR_TYPE") or attributes.get("HARB_TYPE") or "") or None,
+                )
+            )
+            if len(ports) >= limit:
+                return ports
+    return ports
+
+
+@lru_cache(maxsize=256)
+def _fetch_world_ports_nearby_cached(
+    *,
+    lat: float,
+    lon: float,
+    lat_radius: float,
+    lon_radius: float,
+    feature_service_url: str = DEFAULT_WORLD_PORT_INDEX_URL,
+    limit: int = 40,
+    timeout: int = 20,
+) -> tuple[PortRecord, ...]:
+    query_url = feature_service_url.rstrip("/") + "/query"
+    min_lon = max(-180.0, lon - lon_radius)
+    max_lon = min(180.0, lon + lon_radius)
+    min_lat = max(-90.0, lat - lat_radius)
+    max_lat = min(90.0, lat + lat_radius)
+    response = requests.get(
+        query_url,
+        params={
+            "where": "1=1",
+            "geometry": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": 4326,
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "f": "json",
+            "resultRecordCount": max(1, min(limit, 100)),
+        },
+        timeout=timeout,
+        verify=False,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    features = payload.get("features", [])
+    ports: list[PortRecord] = []
+    seen: set[tuple[str, float, float]] = set()
     for feature in features:
         attributes = feature.get("attributes") or {}
         lat_lon = _extract_lat_lon(feature)
         if lat_lon is None:
             continue
-        lat, lon = lat_lon
+        port_lat, port_lon = lat_lon
+        name = _extract_port_name(attributes)
+        if not name or name == "Unknown port":
+            continue
+        key = (name, round(port_lat, 4), round(port_lon, 4))
+        if key in seen:
+            continue
+        seen.add(key)
         ports.append(
             PortRecord(
-                name=_extract_port_name(attributes),
+                name=name,
                 country=_extract_country(attributes),
-                lat=lat,
-                lon=lon,
-                harbor_size=str(attributes.get("HARBOR_SIZE") or attributes.get("HARB_SIZE") or "") or None,
-                harbor_type=str(attributes.get("HARBOR_TYPE") or attributes.get("HARB_TYPE") or "") or None,
+                lat=port_lat,
+                lon=port_lon,
+                harbor_size=str(attributes.get("harbor_size_code") or attributes.get("harb_size") or attributes.get("HARBOR_SIZE") or attributes.get("HARB_SIZE") or "") or None,
+                harbor_type=str(attributes.get("harbor_type_code") or attributes.get("harb_type") or attributes.get("HARBOR_TYPE") or attributes.get("HARB_TYPE") or "") or None,
             )
         )
-    return ports
+    return tuple(ports)
+
+
+def fetch_world_ports_nearby(
+    *,
+    lat: float,
+    lon: float,
+    lat_radius: float = 10.0,
+    lon_radius: float = 14.0,
+    feature_service_url: str = DEFAULT_WORLD_PORT_INDEX_URL,
+    limit: int = 40,
+    timeout: int = 20,
+) -> list[PortRecord]:
+    return list(
+        _fetch_world_ports_nearby_cached(
+            lat=round(float(lat), 2),
+            lon=round(float(lon), 2),
+            lat_radius=round(float(lat_radius), 2),
+            lon_radius=round(float(lon_radius), 2),
+            feature_service_url=feature_service_url,
+            limit=limit,
+            timeout=timeout,
+        )
+    )
 
 
 @lru_cache(maxsize=128)

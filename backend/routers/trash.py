@@ -12,7 +12,7 @@ from db.database import get_repo
 from db.demo_data import DemoOceanRepository, REGION_BOUNDS
 from db.models import PortHint, TrashHotspot, TrashResponse
 from ingest.fetch_trash import TrashDataError, load_trash_observations
-from ingest.fetch_world_port_index import DEFAULT_WORLD_PORT_INDEX_URL, fetch_world_ports, nearest_port
+from ingest.fetch_world_port_index import DEFAULT_WORLD_PORT_INDEX_URL, fetch_world_ports, fetch_world_ports_nearby, nearest_port
 
 router = APIRouter()
 _TRASH_RESPONSE_CACHE: dict[tuple, tuple[float, TrashResponse]] = {}
@@ -249,7 +249,7 @@ def _predicted_trash_hotspots(
             ports,
             hotspot_lat,
             hotspot_lon,
-            live_fallback=False,
+            live_fallback=True,
         )
         cross_check = None
         if observed_items:
@@ -327,7 +327,7 @@ def _fetch_ports_cached(
             max_lat=max_lat,
             min_lon=query_min_lon,
             max_lon=query_max_lon,
-            limit=80,
+            limit=1200,
             timeout=10,
         )
     except Exception:
@@ -339,20 +339,39 @@ def _fetch_ports_cached(
 
 def _resolve_route_port(port_url: str, global_ports: list, lat: float, lon: float, *, live_fallback: bool = False):
     best_port = nearest_port(lat, lon, ports=global_ports) if global_ports else None
-    if best_port is not None:
+    if best_port is not None and getattr(best_port, "name", None) and best_port.name != "Unknown port":
         lon_delta = min(abs(best_port.lon - lon), abs(abs(best_port.lon - lon) - 360.0))
         if math.hypot((best_port.lat - lat) / 8.0, lon_delta / 10.0) <= 24.0:
             return best_port
+    for lat_radius, lon_radius in ((8.0, 10.0), (12.0, 16.0), (18.0, 24.0)):
+        try:
+            nearby_ports = fetch_world_ports_nearby(
+                lat=lat,
+                lon=lon,
+                lat_radius=lat_radius,
+                lon_radius=lon_radius,
+                feature_service_url=port_url if "FeatureServer" in port_url else DEFAULT_WORLD_PORT_INDEX_URL,
+                limit=40,
+                timeout=12,
+            )
+        except Exception:
+            nearby_ports = []
+        if nearby_ports:
+            resolved = nearest_port(lat, lon, ports=nearby_ports)
+            if resolved and getattr(resolved, "name", None) and resolved.name != "Unknown port":
+                return resolved
     if not live_fallback:
-        return best_port
+        return None
     for radius_m in (450_000, 900_000, 1_500_000):
         try:
             nearby_ports = fetch_osm_nearby_ports(lat=lat, lon=lon, radius_m=radius_m, timeout=12)
         except Exception:
             continue
         if nearby_ports:
-            return nearest_port(lat, lon, ports=nearby_ports)
-    return best_port
+            resolved = nearest_port(lat, lon, ports=nearby_ports)
+            if resolved and getattr(resolved, "name", None):
+                return resolved
+    return None
 
 
 def _build_trash_response(repo: DemoOceanRepository, region: str, limit: int) -> TrashResponse:
