@@ -53,6 +53,8 @@ def export_model_artifact(
     feature_schema: dict[str, Any],
     best_checkpoint_path: str | None,
     framework: str,
+    lookback_hours: int,
+    tensor_layout: dict[str, Any],
 ) -> dict[str, str]:
     artifact_dir = model_registry_root() / model_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,9 @@ def export_model_artifact(
         "trained_regions": trained_regions,
         "compatible_regions": compatible_regions,
         "horizons": horizons,
+        "trained_horizons": horizons,
+        "lookback_hours": lookback_hours,
+        "tensor_layout": tensor_layout,
         "input_channels": input_channels,
         "output_heads": output_heads,
         "training_command": training_command,

@@ -88,6 +88,26 @@ That script runs the full seeded loop:
 
 ## Running the app
 
+Fastest full local startup:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+powershell -ExecutionPolicy Bypass -File scripts\dev-up.ps1
+```
+
+Add `-BootstrapDb` when you want the launcher to run the local Postgres bootstrap first:
+
+```powershell
+cd C:\Users\clewr\Catapult-2026
+powershell -ExecutionPolicy Bypass -File scripts\dev-up.ps1 -BootstrapDb
+```
+
+That launcher opens three PowerShell windows and starts:
+
+- inference service on `http://127.0.0.1:8100`
+- main API on `http://127.0.0.1:8000`
+- frontend on `http://127.0.0.1:3000`
+
 Start the API:
 
 ```powershell
@@ -203,6 +223,7 @@ CLI equivalents:
 ```powershell
 cd C:\Users\clewr\Catapult-2026
 .\.venv\Scripts\python.exe -m app.cli build-dataset --region-id sf_bay_estuary --lookback-hours 12 --target-horizons 24 48 72
+.\.venv\Scripts\python.exe -m app.cli build-dataset --region-id sf_bay_estuary --lookback-hours 12 --target-horizons 24 48 72 --allow-partial-horizons
 .\.venv\Scripts\python.exe -m app.cli inspect-dataset --dataset-id <dataset-id>
 .\.venv\Scripts\python.exe -m app.cli train-model --region-id sf_bay_estuary --dataset-id <dataset-id> --architecture linear_residual
 .\.venv\Scripts\python.exe -m app.cli evaluate-model --model-id <model-id>
@@ -222,6 +243,8 @@ cd C:\Users\clewr\Catapult-2026
 tensorboard --logdir data\training_runs
 ```
 
+Dataset export now defaults to strict horizon coverage. If you request `24 48 72`, the export either produces all three horizons or fails with a coverage error. Use `--allow-partial-horizons` only when you explicitly want the exporter to shrink the horizon list to the common subset it can satisfy.
+
 Current trainer behavior:
 
 - `linear_residual` remains the lightweight fallback trainer and can auto-promote as a per-region or shared fallback model
@@ -233,6 +256,8 @@ Current trainer behavior:
 - `model.ts` is the expected deep runtime artifact and is intentionally TorchScript; model metadata records whether export used `trace` or `script`
 - `auto` promotion is conservative and now requires at least `50` filtered samples with at least `10` test samples; smaller runs stay `candidate` even if training/export succeeded
 - candidate models can be tested directly in forecast runtime with `run-forecast --model-id <model-id>` or `POST /api/forecast/run` with `model_id`, without promoting them first
+- deep runtime feature snapshots are now built from the exported model feature contract instead of a hardcoded channel/horizon assumption
+- deep artifacts carry `lookback_hours`, `trained_horizons`, `tensor_layout`, `compatible_regions`, and the authoritative `input_channels` in their exported metadata
 
 Recommended trust workflow:
 

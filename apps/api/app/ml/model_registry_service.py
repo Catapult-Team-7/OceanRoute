@@ -304,6 +304,20 @@ def _linear_residual_artifact(
         "input_channels": list(bundle.metadata["input_channels"]),
         "target_channels": list(bundle.metadata["target_channels"]),
         "horizons": list(request.horizons),
+        "trained_horizons": list(request.horizons),
+        "lookback_hours": int(bundle.metadata.get("lookback_hours", bundle.x_tensor.shape[1])),
+        "compatible_regions": region_ids,
+        "tensor_layout": {
+            "feature_snapshot": "T,C,Y,X",
+            "model_input": "B,T,C,Y,X",
+            "target": "B,H,1,Y,X",
+        },
+        "tensor_shapes": {
+            "X": list(bundle.x_tensor.shape),
+            "Y_hotspot_probability": list(bundle.y_probability.shape),
+            "Y_expected_kg": list(bundle.y_expected_kg.shape),
+            "Y_uncertainty": list(bundle.y_uncertainty.shape),
+        },
     }
     feature_schema_path = artifact_dir / "feature_schema.json"
     feature_schema_path.write_text(json.dumps(feature_schema, indent=2), encoding="utf-8")
@@ -318,6 +332,9 @@ def _linear_residual_artifact(
         "trained_regions": region_ids,
         "compatible_regions": region_ids,
         "horizons": list(request.horizons),
+        "trained_horizons": list(request.horizons),
+        "lookback_hours": int(bundle.metadata.get("lookback_hours", bundle.x_tensor.shape[1])),
+        "tensor_layout": feature_schema["tensor_layout"],
         "input_channels": list(bundle.metadata["input_channels"]),
         "output_heads": list(TARGET_CHANNELS),
         "framework": "numpy_residual",
@@ -720,7 +737,24 @@ def get_active_model_payload(db: Session, region_id: str, model_id: str | None =
     payload.setdefault("dataset_version", row.dataset_version)
     payload.setdefault("model_stage", row.stage)
     payload.setdefault("training_scope", row.training_scope)
-    payload.setdefault("artifact_paths", {"model": row.export_artifact_path} if row.export_artifact_path else {})
+    payload.setdefault("trained_horizons", list(row.horizons))
+    payload.setdefault("compatible_regions", list(row.compatible_regions))
+    payload.setdefault("input_channels", list(row.input_channels))
+    payload.setdefault(
+        "artifact_paths",
+        {
+            key: value
+            for key, value in {
+                "model": row.export_artifact_path,
+                "feature_schema": row.feature_schema_path,
+                "normalization_stats": row.normalization_stats_path,
+                "checkpoint": row.checkpoint_path,
+            }.items()
+            if value
+        },
+    )
+    payload.setdefault("feature_schema_path", row.feature_schema_path)
+    payload.setdefault("normalization_stats_path", row.normalization_stats_path)
     payload.setdefault("export_format", _export_format_from_payload(payload))
     return payload
 

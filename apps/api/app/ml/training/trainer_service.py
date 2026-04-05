@@ -87,14 +87,57 @@ def _write_curves(run_dir: Path, train_losses: list[float], val_losses: list[flo
 
 if TORCH_AVAILABLE and DATAMODULE_LIGHTNING_AVAILABLE and LIGHTNING_AVAILABLE and pl is not None:  # pragma: no cover - deep path only
     class SequenceForecastLightningModule(pl.LightningModule):
-        def __init__(self, *, architecture: str, input_channels: int, num_horizons: int, learning_rate: float) -> None:
+        def __init__(
+            self,
+            *,
+            architecture: str,
+            input_channels: int,
+            num_horizons: int,
+            learning_rate: float,
+            hotspot_loss: str,
+            focal_gamma: float,
+        ) -> None:
             super().__init__()
             self.save_hyperparameters()
             self.model = build_model(architecture, input_channels=input_channels, num_horizons=num_horizons)
             self.learning_rate = learning_rate
+            self.hotspot_loss = hotspot_loss
+            self.focal_gamma = focal_gamma
 
         def forward(self, inputs):  # type: ignore[override]
             return self.model(inputs)
+
+        def _probability_diagnostics(self, prediction_probability, target_probability) -> dict[str, float]:
+            positive_mask = target_probability > 0.5
+            negative_mask = target_probability <= 0.5
+            positive_prob_mean = (
+                float(prediction_probability[positive_mask].mean().detach().cpu().item())
+                if bool(positive_mask.any())
+                else 0.0
+            )
+            negative_prob_mean = (
+                float(prediction_probability[negative_mask].mean().detach().cpu().item())
+                if bool(negative_mask.any())
+                else 0.0
+            )
+            flattened_prediction = prediction_probability.reshape(prediction_probability.shape[0], -1)
+            flattened_target = target_probability.reshape(target_probability.shape[0], -1)
+            top_k = min(10, flattened_prediction.shape[1])
+            if top_k <= 0:
+                return {
+                    "positive_prob_mean": positive_prob_mean,
+                    "negative_prob_mean": negative_prob_mean,
+                    "top10_score_mean": 0.0,
+                    "top10_true_hits_mean": 0.0,
+                }
+            top_scores, top_indexes = torch.topk(flattened_prediction, k=top_k, dim=1)
+            top_hits = torch.gather(flattened_target, 1, top_indexes)
+            return {
+                "positive_prob_mean": positive_prob_mean,
+                "negative_prob_mean": negative_prob_mean,
+                "top10_score_mean": float(top_scores.mean().detach().cpu().item()),
+                "top10_true_hits_mean": float(top_hits.sum(dim=1).float().mean().detach().cpu().item()),
+            }
 
         def _shared_step(self, batch, stage: str):
             prediction_probability, prediction_expected_kg, prediction_uncertainty = self(batch["inputs"])
@@ -105,9 +148,13 @@ if TORCH_AVAILABLE and DATAMODULE_LIGHTNING_AVAILABLE and LIGHTNING_AVAILABLE an
                 target_probability=batch["target_probability"],
                 target_expected_kg=batch["target_expected_kg"],
                 target_uncertainty=batch["target_uncertainty"],
+                hotspot_loss=self.hotspot_loss,
+                focal_gamma=self.focal_gamma,
             )
             self.log(f"{stage}_loss", total_loss, prog_bar=True, on_epoch=True, on_step=(stage == "train"))
             for name, value in loss_parts.items():
+                self.log(f"{stage}_{name}", value, prog_bar=False, on_epoch=True, on_step=False)
+            for name, value in self._probability_diagnostics(prediction_probability, batch["target_probability"]).items():
                 self.log(f"{stage}_{name}", value, prog_bar=False, on_epoch=True, on_step=False)
             return total_loss
 
@@ -193,6 +240,8 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
         input_channels=int(bundle.x_tensor.shape[2]),
         num_horizons=len(config.horizons),
         learning_rate=config.learning_rate,
+        hotspot_loss=config.hotspot_loss,
+        focal_gamma=config.focal_gamma,
     )
     trainer = pl.Trainer(
         max_epochs=config.epochs,
@@ -216,6 +265,8 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
             input_channels=int(bundle.x_tensor.shape[2]),
             num_horizons=len(config.horizons),
             learning_rate=config.learning_rate,
+            hotspot_loss=config.hotspot_loss,
+            focal_gamma=config.focal_gamma,
         )
     metrics = _evaluate_model(trained_module, datamodule, list(config.horizons))
     _write_curves(
@@ -229,6 +280,14 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
         "input_channels": bundle.metadata["input_channels"],
         "target_channels": bundle.metadata["target_channels"],
         "horizons": bundle.metadata["horizons"],
+        "trained_horizons": list(config.horizons),
+        "lookback_hours": int(bundle.metadata.get("lookback_hours", bundle.x_tensor.shape[1])),
+        "compatible_regions": list(config.region_ids),
+        "tensor_layout": {
+            "feature_snapshot": "T,C,Y,X",
+            "model_input": "B,T,C,Y,X",
+            "target": "B,H,1,Y,X",
+        },
         "tensor_shapes": bundle.metadata["tensor_shapes"],
     }
     artifact_paths = export_model_artifact(
@@ -250,6 +309,8 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
         feature_schema=feature_schema,
         best_checkpoint_path=best_checkpoint_path,
         framework=config.framework,
+        lookback_hours=int(bundle.metadata.get("lookback_hours", bundle.x_tensor.shape[1])),
+        tensor_layout=feature_schema["tensor_layout"],
     )
     stdout_path.write_text(
         json.dumps(

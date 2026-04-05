@@ -33,6 +33,8 @@ def build_dataset_endpoint(request: DatasetBuildRequest, db: Session = Depends(g
         return build_dataset(request, db)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/datasets/export", response_model=DatasetArtifact)
@@ -41,6 +43,8 @@ def export_dataset_endpoint(request: DatasetExportRequest, db: Session = Depends
         return build_dataset(request, db)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/datasets", response_model=list[DatasetArtifact])

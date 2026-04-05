@@ -226,6 +226,7 @@ def write_baseline_tensors(
     beaching_fraction_by_cell: dict[str, float],
     stokes_u_by_cell: dict[str, float],
     stokes_v_by_cell: dict[str, float],
+    compact_group: bool = False,
 ) -> tuple[GridSpec, dict[str, str], dict[str, tuple[int, int]]]:
     year, month = _month_bucket(generated_at)
     base = _safe_path("baselines", region_id, year, month, run_id, f"{debris_class}-h{horizon_hour}")
@@ -243,9 +244,34 @@ def write_baseline_tensors(
     grid_spec.shoreline_mask_uri = masks["shoreline_mask_uri"]
     grid_spec.restricted_mask_uri = masks["restricted_mask_uri"]
     grid_spec.bathymetry_mask_uri = masks["bathymetry_mask_uri"]
-    return (
-        grid_spec,
-        {
+    arrays = {
+        "density": density_tensor,
+        "current_u": current_u_tensor,
+        "current_v": current_v_tensor,
+        "wind_u": wind_u_tensor,
+        "wind_v": wind_v_tensor,
+        "ensemble_spread": spread_tensor,
+        "beaching_fraction": beaching_tensor,
+        "stokes_u": stokes_u_tensor,
+        "stokes_v": stokes_v_tensor,
+        "stokes_magnitude": stokes_magnitude,
+    }
+    if compact_group:
+        _, group_uris = _write_tensor_group(base / "tensors.zarr", arrays)
+        tensor_uris = {
+            "density_uri": group_uris["density"],
+            "current_u_uri": group_uris["current_u"],
+            "current_v_uri": group_uris["current_v"],
+            "wind_u_uri": group_uris["wind_u"],
+            "wind_v_uri": group_uris["wind_v"],
+            "ensemble_spread_uri": group_uris["ensemble_spread"],
+            "beaching_fraction_uri": group_uris["beaching_fraction"],
+            "stokes_u_uri": group_uris["stokes_u"],
+            "stokes_v_uri": group_uris["stokes_v"],
+            "stokes_magnitude_uri": group_uris["stokes_magnitude"],
+        }
+    else:
+        tensor_uris = {
             "density_uri": _write_tensor(base / "density", density_tensor),
             "current_u_uri": _write_tensor(base / "current_u", current_u_tensor),
             "current_v_uri": _write_tensor(base / "current_v", current_v_tensor),
@@ -256,7 +282,10 @@ def write_baseline_tensors(
             "stokes_u_uri": _write_tensor(base / "stokes_u", stokes_u_tensor),
             "stokes_v_uri": _write_tensor(base / "stokes_v", stokes_v_tensor),
             "stokes_magnitude_uri": _write_tensor(base / "stokes_magnitude", stokes_magnitude),
-        },
+        }
+    return (
+        grid_spec,
+        tensor_uris,
         cell_map,
     )
 

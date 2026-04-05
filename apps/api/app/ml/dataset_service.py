@@ -63,6 +63,7 @@ def _normalize_request(request: DatasetBuildRequest | DatasetExportRequest) -> D
         lookback_hours=settings.training_lookback_hours,
         target_horizons=[24, 48, 72],
         label_strategy="observed_or_proxy",
+        allow_partial_horizons=request.allow_partial_horizons,
     )
 
 
@@ -171,6 +172,36 @@ def _region_ids_from_request(request: DatasetExportRequest) -> list[str]:
     return [settings.pilot_region]
 
 
+def _horizon_coverage(
+    grouped: dict[tuple[str, str, str], dict[int, BaselineArtifact]],
+    lookback_required: list[int],
+    requested_horizons: list[int],
+) -> dict[str, object]:
+    lookback_eligible = [artifacts for artifacts in grouped.values() if all(hour in artifacts for hour in lookback_required)]
+    coverage_counts = {horizon: 0 for horizon in requested_horizons}
+    for artifacts in lookback_eligible:
+        for horizon in requested_horizons:
+            if horizon in artifacts:
+                coverage_counts[horizon] += 1
+    common_horizons = [
+        horizon
+        for horizon in requested_horizons
+        if lookback_eligible and all(horizon in artifacts for artifacts in lookback_eligible)
+    ]
+    strict_complete_count = sum(
+        1
+        for artifacts in lookback_eligible
+        if all(horizon in artifacts for horizon in requested_horizons)
+    )
+    return {
+        "lookback_eligible_groups": len(lookback_eligible),
+        "requested_horizons": requested_horizons,
+        "coverage_counts": coverage_counts,
+        "common_horizons": common_horizons,
+        "strict_complete_count": strict_complete_count,
+    }
+
+
 def _observation_overrides(
     *,
     region_id: str,
@@ -239,7 +270,7 @@ def _build_time_window_features(
 def build_dataset(request: DatasetBuildRequest | DatasetExportRequest, db: Session) -> DatasetArtifact:
     normalized = _normalize_request(request)
     region_ids = _region_ids_from_request(normalized)
-    target_horizons = sorted(dict.fromkeys(normalized.target_horizons))
+    requested_target_horizons = sorted(dict.fromkeys(normalized.target_horizons))
 
     run_rows: list[ForecastRunModel] = []
     for region_id in region_ids:
@@ -271,18 +302,29 @@ def build_dataset(request: DatasetBuildRequest | DatasetExportRequest, db: Sessi
     mission_outcomes = db.execute(select(MissionOutcomeModel).order_by(MissionOutcomeModel.completed_at.asc())).scalars().all()
     mission_kg_proxy = max(1.0, sum(item.collected_kg for item in mission_outcomes) / max(len(mission_outcomes), 1))
     lookback_required = list(range(1, normalized.lookback_hours + 1))
-    eligible_groups = [artifacts for artifacts in grouped.values() if all(hour in artifacts for hour in lookback_required)]
-    effective_target_horizons = [hour for hour in target_horizons if eligible_groups and all(hour in artifacts for artifacts in eligible_groups)]
-    if not effective_target_horizons:
-        available_horizons = sorted(
-            {
-                hour
-                for artifacts in eligible_groups
-                for hour in target_horizons
-                if hour in artifacts
-            }
+    coverage = _horizon_coverage(grouped, lookback_required, requested_target_horizons)
+    lookback_eligible_groups = int(coverage["lookback_eligible_groups"])
+    common_horizons = list(coverage["common_horizons"])
+    strict_complete_count = int(coverage["strict_complete_count"])
+    if not lookback_eligible_groups:
+        raise LookupError(
+            f"No baseline artifact groups satisfied the required {normalized.lookback_hours}h lookback window "
+            f"for regions: {', '.join(region_ids)}."
         )
-        effective_target_horizons = available_horizons
+    if normalized.allow_partial_horizons:
+        effective_target_horizons = common_horizons
+        if not effective_target_horizons:
+            raise LookupError(
+                f"No common target horizons were available for requested horizons {requested_target_horizons}. "
+                f"Coverage: {coverage['coverage_counts']}."
+            )
+    else:
+        effective_target_horizons = requested_target_horizons
+        if strict_complete_count == 0:
+            raise ValueError(
+                f"Requested target horizons {requested_target_horizons} were not fully available for any eligible run. "
+                f"Coverage: {coverage['coverage_counts']}. Re-run with allow_partial_horizons=true to export a reduced set."
+            )
 
     x_samples: list[np.ndarray] = []
     y_probability_samples: list[np.ndarray] = []
@@ -412,8 +454,11 @@ def build_dataset(request: DatasetBuildRequest | DatasetExportRequest, db: Sessi
         "dataset_id": dataset_id,
         "region_ids": region_ids,
         "horizons": effective_target_horizons,
+        "requested_horizons": requested_target_horizons,
         "input_channels": INPUT_CHANNELS,
         "target_channels": TARGET_CHANNELS,
+        "lookback_hours": normalized.lookback_hours,
+        "allow_partial_horizons": normalized.allow_partial_horizons,
         "tensor_shapes": {
             "X": list(x_tensor.shape),
             "Y_hotspot_probability": list(y_probability_tensor.shape),
@@ -424,6 +469,7 @@ def build_dataset(request: DatasetBuildRequest | DatasetExportRequest, db: Sessi
             "forecast_run_ids": run_ids,
             "label_provenance_counts": provenance_counts,
         },
+        "coverage": coverage,
         "git_ref": _git_ref(),
     }
     export_paths = write_dataset_export(
@@ -472,6 +518,10 @@ def build_dataset(request: DatasetBuildRequest | DatasetExportRequest, db: Sessi
         metadata={
             "feature_stats": feature_stats,
             "source_provenance": metadata["source_provenance"],
+            "coverage": metadata["coverage"],
+            "requested_horizons": metadata["requested_horizons"],
+            "lookback_hours": metadata["lookback_hours"],
+            "allow_partial_horizons": metadata["allow_partial_horizons"],
             "git_ref": metadata["git_ref"],
         },
     )

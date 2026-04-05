@@ -8,6 +8,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import ModelRegistryModel, PredictionArtifactModel
+from app.ml.runtime_feature_service import resolve_runtime_feature_contract, validate_runtime_feature_tensor
 from app.schemas import InferencePredictRequest, InferencePredictResponse, PredictionArtifact
 from app.ml.model_registry_service import get_active_model_entry, get_active_model_payload
 from app.services.data_lake_service import read_tensor, write_prediction_artifact
@@ -92,17 +93,19 @@ def predict_from_feature_artifact(request: InferencePredictRequest, db: Session)
     payload = get_active_model_payload(db, request.region_id, model_id=active_model.model_id)
     if payload is None:
         raise LookupError(f"No active model payload was available for region {request.region_id}.")
+    contract = resolve_runtime_feature_contract(payload)
 
     x_tensor = read_tensor(request.feature_artifact_uri).astype(np.float32)
     if x_tensor.ndim == 4:
         x_tensor = x_tensor[np.newaxis, ...]
+    x_tensor = validate_runtime_feature_tensor(x_tensor, contract)
 
     used_fallback = False
     if payload.get("architecture") in {"temporal_unet", "convlstm"}:
         artifact_model_path = str(payload.get("artifact_paths", {}).get("model", ""))
         try:
             probability, expected_kg, uncertainty = _run_exported_model(artifact_model_path, str(payload["model_id"]), x_tensor)
-            model_horizons = [int(item) for item in payload.get("horizons", request.target_horizons)]
+            model_horizons = [int(item) for item in contract["trained_horizons"]]
             horizon_indexes = [model_horizons.index(horizon) for horizon in request.target_horizons if horizon in model_horizons]
             if len(horizon_indexes) != len(request.target_horizons):
                 raise ValueError("Requested horizons were not available in the exported model artifact.")

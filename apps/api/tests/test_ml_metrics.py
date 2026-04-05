@@ -34,6 +34,9 @@ def test_compute_eval_metrics_normalizes_singleton_channel_grids() -> None:
     assert metrics["kg_mae"] == 0.0
     assert metrics["kg_rmse"] == 0.0
     assert metrics["uncertainty_mae"] == 0.0
+    assert "positive_probability_mean" in metrics
+    assert "top10_predicted_scores" in metrics
+    assert "top10_true_hit_count" in metrics
 
 
 def test_compute_eval_metrics_broadcasts_single_horizon_baseline_density() -> None:

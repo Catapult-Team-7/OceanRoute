@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import shutil
 from pathlib import Path
 
@@ -26,6 +27,20 @@ from app.main import app  # noqa: E402
 from app.models import Base  # noqa: E402
 
 
+def _rmtree(path: Path) -> None:
+    if not path.exists():
+        return
+
+    def _onerror(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except Exception:
+            raise exc_info[1]
+
+    shutil.rmtree(path, onerror=_onerror)
+
+
 def _upgrade_test_db() -> None:
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
@@ -45,7 +60,7 @@ def migrated_test_db() -> None:
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
     if TEST_DATA_ROOT.exists():
-        shutil.rmtree(TEST_DATA_ROOT)
+        _rmtree(TEST_DATA_ROOT)
     TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
     _upgrade_test_db()
     yield
@@ -53,19 +68,19 @@ def migrated_test_db() -> None:
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
     if TEST_DATA_ROOT.exists():
-        shutil.rmtree(TEST_DATA_ROOT)
+        _rmtree(TEST_DATA_ROOT)
 
 
 @pytest.fixture(autouse=True)
 def clean_test_state(migrated_test_db) -> None:
     _clear_database()
     if TEST_DATA_ROOT.exists():
-        shutil.rmtree(TEST_DATA_ROOT)
+        _rmtree(TEST_DATA_ROOT)
     TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
     yield
     _clear_database()
     if TEST_DATA_ROOT.exists():
-        shutil.rmtree(TEST_DATA_ROOT)
+        _rmtree(TEST_DATA_ROOT)
     TEST_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 

@@ -75,6 +75,24 @@ def route_uplift_pct(predicted_kg: np.ndarray, baseline_density: np.ndarray, tar
     return float(((baseline_error - predicted_error) / abs(baseline_error)) * 100.0)
 
 
+def _top_k_diagnostics(probabilities: np.ndarray, targets: np.ndarray, horizons: list[int], k: int = 10) -> tuple[dict[str, list[float]], dict[str, int]]:
+    top_scores: dict[str, list[float]] = {}
+    top_hits: dict[str, int] = {}
+    for index, horizon in enumerate(horizons):
+        flat_probs = probabilities[:, index].reshape(-1)
+        flat_targets = targets[:, index].reshape(-1)
+        top_k = min(k, flat_probs.size)
+        if top_k <= 0:
+            top_scores[f"h{horizon}"] = []
+            top_hits[f"h{horizon}"] = 0
+            continue
+        top_idx = np.argpartition(flat_probs, -top_k)[-top_k:]
+        ordered_scores = np.sort(flat_probs[top_idx])[::-1]
+        top_scores[f"h{horizon}"] = [round(float(item), 4) for item in ordered_scores.tolist()]
+        top_hits[f"h{horizon}"] = int(np.sum(flat_targets[top_idx] > 0.5))
+    return top_scores, top_hits
+
+
 def compute_eval_metrics(
     *,
     probabilities: np.ndarray,
@@ -85,7 +103,7 @@ def compute_eval_metrics(
     target_expected_kg: np.ndarray,
     target_uncertainty: np.ndarray,
     horizons: list[int],
-) -> dict[str, float | str]:
+) -> dict[str, object]:
     probabilities = _normalize_grid_tensor(probabilities)
     predicted_kg = _normalize_grid_tensor(predicted_kg)
     predicted_uncertainty = _normalize_grid_tensor(predicted_uncertainty)
@@ -147,6 +165,11 @@ def compute_eval_metrics(
 
     calibration = calibration_summary(probabilities, target_probability, horizons)
     uncertainty_error = float(np.mean(np.abs(predicted_uncertainty - target_uncertainty)))
+    positive_mask = target_probability > 0.5
+    negative_mask = ~positive_mask
+    positive_probability_mean = float(np.mean(probabilities[positive_mask])) if np.any(positive_mask) else 0.0
+    negative_probability_mean = float(np.mean(probabilities[negative_mask])) if np.any(negative_mask) else 0.0
+    top_scores, top_hits = _top_k_diagnostics(probabilities, target_probability, horizons, k=10)
     return {
         "precision_at_10": round(precision_at_k(probabilities, target_probability, k=10), 4),
         "recall_at_10": round(recall_at_k(probabilities, target_probability, k=10), 4),
@@ -155,5 +178,9 @@ def compute_eval_metrics(
         "kg_rmse": round(kg_rmse(predicted_kg, target_expected_kg), 4),
         "uncertainty_mae": round(uncertainty_error, 4),
         "route_uplift_pct": round(route_uplift_pct(predicted_kg, baseline_density, target_expected_kg), 4),
-        "calibration_summary": str(calibration),
+        "calibration_summary": calibration,
+        "positive_probability_mean": round(positive_probability_mean, 4),
+        "negative_probability_mean": round(negative_probability_mean, 4),
+        "top10_predicted_scores": top_scores,
+        "top10_true_hit_count": top_hits,
     }

@@ -1,0 +1,41 @@
+param(
+    [switch]$BootstrapDb
+)
+
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$ActivateScript = Join-Path $RepoRoot ".venv\Scripts\Activate.ps1"
+$BootstrapScript = Join-Path $RepoRoot "scripts\bootstrap-db.ps1"
+$ApiCommand = @"
+& '$ActivateScript'
+Set-Location '$RepoRoot'
+\$env:OCEANROUTE_INFERENCE_SERVICE_URL = 'http://127.0.0.1:8100'
+python -m uvicorn app.main:app --app-dir apps\api --reload
+"@
+$InferenceCommand = @"
+& '$ActivateScript'
+Set-Location '$RepoRoot'
+python -m uvicorn app.inference_main:app --app-dir apps\api --port 8100 --reload
+"@
+$FrontendCommand = @"
+Set-Location '$(Join-Path $RepoRoot "apps\web")'
+npm run dev
+"@
+
+if (-not (Test-Path $ActivateScript)) {
+    throw "Virtual environment activation script not found at $ActivateScript"
+}
+
+if ($BootstrapDb) {
+    & powershell -ExecutionPolicy Bypass -File $BootstrapScript
+}
+
+Start-Process powershell.exe -WorkingDirectory $RepoRoot -ArgumentList @("-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $InferenceCommand) | Out-Null
+Start-Process powershell.exe -WorkingDirectory $RepoRoot -ArgumentList @("-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $ApiCommand) | Out-Null
+Start-Process powershell.exe -WorkingDirectory (Join-Path $RepoRoot "apps\web") -ArgumentList @("-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $FrontendCommand) | Out-Null
+
+Write-Host "OceanRoute local stack started."
+Write-Host "API docs: http://127.0.0.1:8000/docs"
+Write-Host "Inference health: http://127.0.0.1:8100/health"
+Write-Host "Frontend: http://127.0.0.1:3000"

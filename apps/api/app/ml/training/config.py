@@ -26,6 +26,8 @@ class TrainingConfig:
     data_root: Path = field(default_factory=lambda: settings.data_root)
     output_heads: tuple[str, ...] = ("hotspot_probability", "expected_kg", "uncertainty")
     framework: str = "pytorch_lightning"
+    hotspot_loss: str = "focal"
+    focal_gamma: float = 2.0
 
     def as_dict(self) -> dict[str, object]:
         payload = asdict(self)

@@ -425,6 +425,7 @@ class DatasetBuildRequest(BaseModel):
     region_id: str
     label_type: Literal["hotspot_presence", "expected_kg"] = "hotspot_presence"
     max_forecast_runs: int = Field(default=10, ge=1, le=200)
+    allow_partial_horizons: bool = False
 
 
 class HistoricalBackfillRequest(BaseModel):
@@ -474,6 +475,7 @@ class DatasetExportRequest(BaseModel):
     lookback_hours: int = Field(default=12, ge=3, le=24)
     target_horizons: list[int] = Field(default_factory=lambda: [24, 48, 72])
     label_strategy: Literal["observed_or_proxy"] = "observed_or_proxy"
+    allow_partial_horizons: bool = False
 
 
 class DatasetArtifact(BaseModel):

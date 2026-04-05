@@ -67,6 +67,7 @@ def build_baseline_artifact(
     wind_u_by_cell: dict[str, float],
     wind_v_by_cell: dict[str, float],
     diagnostics: DriftBaselineDiagnostics,
+    compact_tensors: bool = False,
 ) -> BaselineArtifact:
     grid_spec, tensor_uris, cell_map = write_baseline_tensors(
         region_id=region_id,
@@ -83,6 +84,7 @@ def build_baseline_artifact(
         beaching_fraction_by_cell=diagnostics.beaching_fraction,
         stokes_u_by_cell={cell_id: values[0] for cell_id, values in diagnostics.stokes_drift.items()},
         stokes_v_by_cell={cell_id: values[1] for cell_id, values in diagnostics.stokes_drift.items()},
+        compact_group=compact_tensors,
     )
     return BaselineArtifact(
         artifact_id=str(uuid4()),
@@ -172,6 +174,7 @@ def persist_baseline_artifact(
     wind_u_by_cell: dict[str, float],
     wind_v_by_cell: dict[str, float],
     diagnostics: DriftBaselineDiagnostics,
+    compact_tensors: bool = False,
 ) -> BaselineArtifact:
     artifact = write_baseline_manifest(
         build_baseline_artifact(
@@ -192,6 +195,7 @@ def persist_baseline_artifact(
             wind_u_by_cell=wind_u_by_cell,
             wind_v_by_cell=wind_v_by_cell,
             diagnostics=diagnostics,
+            compact_tensors=compact_tensors,
         )
     )
     db.add(baseline_artifact_to_model(artifact))

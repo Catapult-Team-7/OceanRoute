@@ -5,6 +5,7 @@ coverage
 .pytest_cache
 __pycache__
 .venv
+.venv-gpu
 .mypy_cache
 .ruff_cache
 *.pyc

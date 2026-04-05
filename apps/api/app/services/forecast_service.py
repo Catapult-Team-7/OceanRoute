@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.ml.dataset_service import INPUT_CHANNELS
+from app.ml.runtime_feature_service import build_runtime_feature_snapshot, resolve_prediction_horizons
 from app.models import ForecastRunModel, ForecastStepModel, ObservationModel
 from app.schemas import (
     DEBRIS_CLASS_METADATA,
@@ -25,10 +25,14 @@ from app.schemas import (
 )
 from app.services.artifact_service import write_latest_snapshot
 from app.services.baseline_runtime_service import latest_baseline_artifact, persist_baseline_artifact, run_baseline_diagnostics
-from app.services.data_lake_service import read_tensor, write_feature_snapshot
+from app.services.data_lake_service import read_tensor
 from app.services.ingest_service import load_operational_context
 from app.services.inference_client_service import predict_with_inference_service
-from app.services.model_registry_service import apply_active_model_adjustments, get_active_model_entry
+from app.services.model_registry_service import (
+    apply_active_model_adjustments,
+    get_active_model_entry,
+    get_active_model_payload,
+)
 from app.services.provenance_service import build_forecast_provenance
 from app.services.region_service import get_region_info
 from app.services.residual_model_service import apply_residual_correction
@@ -142,56 +146,6 @@ def _summary_for_steps(
     if active_model is not None and active_model.get("used_inference_fallback") is not None:
         summary["used_inference_fallback"] = bool(active_model["used_inference_fallback"])
     return summary
-
-
-def _feature_tensor_from_baselines(run_id: str, debris_class: str, db: Session) -> tuple[str, str] | None:
-    lookback_artifacts = []
-    for hour in range(1, settings.training_lookback_hours + 1):
-        artifact = latest_baseline_artifact(db, run_id=run_id, debris_class=debris_class, horizon_hour=hour)
-        if artifact is None:
-            return None
-        lookback_artifacts.append(artifact)
-    template = lookback_artifacts[0]
-    shoreline_mask = read_tensor(template.grid_spec.shoreline_mask_uri) if template.grid_spec.shoreline_mask_uri else np.zeros((template.grid_spec.height, template.grid_spec.width), dtype=np.float32)
-    coastline_mask = shoreline_mask.astype(np.float32)
-    land_mask = (coastline_mask >= 0.7).astype(np.float32)
-    region_mask = np.ones_like(coastline_mask, dtype=np.float32)
-    windage = np.full_like(coastline_mask, 0.01 if debris_class == "low" else 0.025, dtype=np.float32)
-    frames = []
-    for artifact in lookback_artifacts:
-        frames.append(
-            np.stack(
-                [
-                    read_tensor(artifact.current_u_uri) if artifact.current_u_uri else np.zeros_like(shoreline_mask),
-                    read_tensor(artifact.current_v_uri) if artifact.current_v_uri else np.zeros_like(shoreline_mask),
-                    read_tensor(artifact.wind_u_uri) if artifact.wind_u_uri else np.zeros_like(shoreline_mask),
-                    read_tensor(artifact.wind_v_uri) if artifact.wind_v_uri else np.zeros_like(shoreline_mask),
-                    read_tensor(artifact.density_uri),
-                    read_tensor(artifact.ensemble_spread_uri),
-                    read_tensor(artifact.beaching_fraction_uri),
-                    read_tensor(artifact.stokes_magnitude_uri),
-                    windage,
-                    land_mask,
-                    coastline_mask,
-                    region_mask,
-                ],
-                axis=0,
-            ).astype(np.float32)
-        )
-    x_tensor = np.stack(frames, axis=0).astype(np.float32)
-    return write_feature_snapshot(
-        region_id=template.region_id,
-        forecast_run_id=run_id,
-        debris_class=debris_class,
-        generated_at=template.generated_at,
-        tensor=x_tensor,
-        metadata={
-            "input_channels": INPUT_CHANNELS,
-            "lookback_hours": settings.training_lookback_hours,
-            "baseline_artifact_ids": [artifact.artifact_id for artifact in lookback_artifacts],
-            "grid_spec": template.grid_spec.model_dump(mode="json"),
-        },
-    )
 
 
 def _apply_prediction_to_steps(
@@ -360,9 +314,15 @@ def run_forecast(
     run_id = str(uuid4())
     steps: list[ForecastStep] = []
     baseline_artifacts: dict[tuple[str, int], str] = {}
+    available_prediction_horizons = sorted({frame.horizon_hour for frame in context.frames})
     active_model_entry = get_active_model_entry(db, context.region.id, model_id=request.model_id)
     if request.model_id and active_model_entry is None:
         raise LookupError(f"Requested model {request.model_id} was not found or is not compatible with region {context.region.id}.")
+    active_model_contract_payload = (
+        get_active_model_payload(db, context.region.id, model_id=active_model_entry.model_id)
+        if active_model_entry is not None
+        else None
+    )
     active_model_payload: dict[str, object] | None = None
     selected_baseline_engine: str | None = None
     used_inference_fallback = False
@@ -464,15 +424,28 @@ def run_forecast(
     inference_service_version: str | None = None
     if active_model_entry is not None and active_model_entry.architecture in {"temporal_unet", "convlstm"}:
         for debris_class in request.debris_classes:
-            feature_bundle = _feature_tensor_from_baselines(run_id, debris_class, db)
-            if feature_bundle is None:
-                if request.model_id:
-                    raise ValueError(
-                        f"Requested model {request.model_id} could not be used because runtime features were unavailable."
-                    )
-                continue
-            feature_artifact_uri, _ = feature_bundle
             try:
+                if active_model_contract_payload is None:
+                    raise ValueError(
+                        f"Requested model {active_model_entry.model_id} did not have a readable runtime feature contract."
+                    )
+                feature_artifact_uri, _, runtime_contract = build_runtime_feature_snapshot(
+                    model_payload=active_model_contract_payload,
+                    region_id=context.region.id,
+                    forecast_run_id=run_id,
+                    debris_class=debris_class,
+                    generated_at=context.generated_at,
+                    db=db,
+                )
+                prediction_horizons = resolve_prediction_horizons(
+                    trained_horizons=list(runtime_contract["trained_horizons"]),
+                    available_horizons=available_prediction_horizons,
+                )
+                if not prediction_horizons:
+                    raise ValueError(
+                        f"Requested model {active_model_entry.model_id} is not compatible with forecast horizons "
+                        f"{available_prediction_horizons}. Trained horizons: {runtime_contract['trained_horizons']}."
+                    )
                 prediction = predict_with_inference_service(
                     InferencePredictRequest(
                         region_id=context.region.id,
@@ -480,7 +453,7 @@ def run_forecast(
                         debris_class=debris_class,
                         feature_artifact_uri=feature_artifact_uri,
                         model_id=active_model_entry.model_id,
-                        target_horizons=[24, 48, 72],
+                        target_horizons=prediction_horizons,
                     ),
                     db,
                 )
@@ -517,14 +490,17 @@ def run_forecast(
                     "dataset_version": active_model_entry.dataset_version or settings.dataset_version,
                     "model_stage": active_model_entry.stage,
                     "training_scope": prediction.artifact.training_scope or active_model_entry.training_scope,
+                    "trained_horizons": list(runtime_contract["trained_horizons"]),
+                    "lookback_hours": int(runtime_contract["lookback_hours"]),
                     "used_candidate_override": used_candidate_override,
                     "used_inference_fallback": prediction.used_fallback,
                 }
             except Exception as exc:
                 if request.model_id:
                     raise ValueError(
-                        f"Requested model {request.model_id} could not be used for inference."
+                        f"Requested model {request.model_id} could not be used for inference: {exc}"
                     ) from exc
+                used_inference_fallback = True
                 continue
 
     steps, linear_payload = apply_active_model_adjustments(

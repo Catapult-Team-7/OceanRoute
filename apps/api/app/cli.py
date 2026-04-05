@@ -119,6 +119,7 @@ def _build_dataset(args: argparse.Namespace) -> None:
                 max_forecast_runs=args.max_forecast_runs,
                 lookback_hours=args.lookback_hours,
                 target_horizons=_resolved_horizons(args),
+                allow_partial_horizons=bool(getattr(args, "allow_partial_horizons", False)),
             ),
             session,
         )
@@ -290,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_parser.add_argument("--max-forecast-runs", type=int, default=10)
     dataset_parser.add_argument("--lookback-hours", type=int, default=settings.training_lookback_hours)
     dataset_parser.add_argument("--target-horizons", nargs="+", type=int, default=[24, 48, 72])
+    dataset_parser.add_argument("--allow-partial-horizons", action="store_true")
     dataset_parser.set_defaults(func=_build_dataset)
 
     inspect_parser = subparsers.add_parser("inspect-dataset", help="Inspect one dataset export and preview its index.")

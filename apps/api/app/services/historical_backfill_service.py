@@ -166,6 +166,7 @@ def _run_dataset_only_chunk(
                         wind_u_by_cell=winds_u,
                         wind_v_by_cell=winds_v,
                         diagnostics=diagnostics,
+                        compact_tensors=True,
                     )
                 )
                 artifact_write_ms += (perf_counter() - artifact_started) * 1000
