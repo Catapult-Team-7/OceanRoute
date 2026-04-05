@@ -90,7 +90,7 @@ export const HACKATHON_API_DEFAULTS = [
       "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
       "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
       "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
-      "min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;" +
+      "min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80;" +
       "min_depth=0;max_depth=1;" +
       "path=Training_Data/Copernicus",
   },

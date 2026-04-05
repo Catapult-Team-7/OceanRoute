@@ -84,6 +84,35 @@ def _winsorize_series(series: pd.Series, lower_q: float = 0.01, upper_q: float =
     return numeric.clip(lower=lower, upper=upper)
 
 
+def _smooth_spatial_grid(values: np.ndarray, mask: np.ndarray | None = None, passes: int = 1) -> np.ndarray:
+    smoothed = np.asarray(values, dtype=np.float32).copy()
+    support = np.asarray(mask, dtype=np.float32) if mask is not None else np.ones_like(smoothed, dtype=np.float32)
+    kernel = np.array(
+        [
+            [1.0, 2.0, 1.0],
+            [2.0, 4.0, 2.0],
+            [1.0, 2.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    kernel /= float(kernel.sum())
+    for _ in range(max(1, passes)):
+        padded_values = np.pad(smoothed * support, ((1, 1), (1, 1)), mode="edge")
+        padded_support = np.pad(support, ((1, 1), (1, 1)), mode="edge")
+        numerator = np.zeros_like(smoothed, dtype=np.float32)
+        denominator = np.zeros_like(smoothed, dtype=np.float32)
+        for di in range(3):
+            for dj in range(3):
+                weight = kernel[di, dj]
+                value_window = padded_values[di : di + smoothed.shape[0], dj : dj + smoothed.shape[1]]
+                support_window = padded_support[di : di + smoothed.shape[0], dj : dj + smoothed.shape[1]]
+                numerator += value_window * weight
+                denominator += support_window * weight
+        smoothed = np.divide(numerator, np.maximum(denominator, 1e-6), out=smoothed, where=denominator > 0)
+        smoothed = np.where(support > 0, smoothed, values)
+    return smoothed
+
+
 def _prepare_target_frame(
     socat_url: str,
     noaa_gml_url: str,
@@ -241,6 +270,10 @@ def build_monthly_training_tensors(
             if not np.isnan(getattr(row, "salinity_obs", np.nan)):
                 feature_grid[1, i, j] = float(row.salinity_obs) / 40.0
 
+        if target_mask.sum() > 0:
+            smoothed_target = _smooth_spatial_grid(target_values[0], target_mask[0], passes=2)
+            target_values[0] = np.where(target_mask[0] > 0, smoothed_target, target_values[0])
+
         monthly_features[(year, month)] = feature_grid
         monthly_targets[(year, month)] = np.nan_to_num(target_values, nan=0.0)
         monthly_masks[(year, month)] = target_mask
@@ -301,6 +334,7 @@ def build_monthly_training_tensors(
         "denoising": {
             "winsorized_columns": ["sst", "salinity", "wind_speed", "pco2_ocean", "pco2_atm", "target_flux"],
             "target_flux_clip_quantiles": [0.02, 0.98],
+            "target_grid_smoothing": {"kernel": "3x3 weighted mean", "passes": 2},
         },
     }
     return TensorBuildResult(

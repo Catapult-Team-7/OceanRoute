@@ -59,6 +59,57 @@ def _in_region(lat: float, lon: float, region: str) -> bool:
     return min_lat <= lat <= max_lat and lon_ok
 
 
+def _operational_latitude_weight(lat: float) -> float:
+    absolute_lat = abs(float(lat))
+    if absolute_lat <= 55:
+        return 1.0
+    if absolute_lat >= 80:
+        return 0.35
+    return max(0.35, 1.0 - ((absolute_lat - 55.0) / 25.0) * 0.65)
+
+
+def _smooth_spatial_grid(values: np.ndarray, support_mask: np.ndarray | None = None, passes: int = 2) -> np.ndarray:
+    smoothed = np.asarray(values, dtype=np.float32).copy()
+    support = np.asarray(support_mask, dtype=np.float32) if support_mask is not None else np.ones_like(smoothed, dtype=np.float32)
+    kernel = np.array(
+        [
+            [1.0, 2.0, 1.0],
+            [2.0, 4.0, 2.0],
+            [1.0, 2.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    kernel /= float(kernel.sum())
+    for _ in range(max(1, passes)):
+        padded_values = np.pad(smoothed * support, ((1, 1), (1, 1)), mode="edge")
+        padded_support = np.pad(support, ((1, 1), (1, 1)), mode="edge")
+        numerator = np.zeros_like(smoothed, dtype=np.float32)
+        denominator = np.zeros_like(smoothed, dtype=np.float32)
+        for di in range(3):
+            for dj in range(3):
+                weight = kernel[di, dj]
+                numerator += padded_values[di : di + smoothed.shape[0], dj : dj + smoothed.shape[1]] * weight
+                denominator += padded_support[di : di + smoothed.shape[0], dj : dj + smoothed.shape[1]] * weight
+        smoothed = np.divide(numerator, np.maximum(denominator, 1e-6), out=smoothed, where=denominator > 0)
+        smoothed = np.where(support > 0, smoothed, values)
+    return smoothed
+
+
+def _select_spaced_anomalies(
+    candidates: list[AnomalyRecord],
+    *,
+    limit: int = 24,
+    min_distance_deg: float = 8.0,
+) -> list[AnomalyRecord]:
+    selected: list[AnomalyRecord] = []
+    for candidate in sorted(candidates, key=lambda item: item.anomaly_score, reverse=True):
+        if all(math.hypot(candidate.lat - item.lat, candidate.lon - item.lon) >= min_distance_deg for item in selected):
+            selected.append(candidate)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _month_from_string(date_str: str | None) -> tuple[int, int] | None:
     if not date_str:
         return None
@@ -277,6 +328,16 @@ def _nearest_grid_index(values: np.ndarray, target: float) -> int:
     return int(np.argmin(np.abs(values - target)))
 
 
+def _support_cells_for_month(copernicus_monthly: pd.DataFrame, target_month: tuple[int, int]) -> set[tuple[float, float]]:
+    target_rows = copernicus_monthly[
+        (copernicus_monthly["year"] == target_month[0]) & (copernicus_monthly["month"] == target_month[1])
+    ]
+    return {
+        (round(float(row.lat_bin), 6), round(float(row.lon_bin), 6))
+        for row in target_rows.itertuples(index=False)
+    }
+
+
 def _load_monthly_drivers(noaa_gml_url: str, era_directory: str | Path | None, copernicus_directory: str | Path | None, resolution: str):
     atmospheric = load_noaa_gml_monthly(noaa_gml_url)
     era_monthly = load_era5_monthly(era_directory or default_era5_directory())
@@ -363,23 +424,49 @@ def build_provisional_real_grid_bundle(
         atm_tensor = torch.tensor([[atm_default]], dtype=torch.float32)
         predicted_grid = model(x_tensor, atm_tensor)[0, 0].detach().cpu().numpy()
 
-    predicted_mean = float(np.nanmean(predicted_grid))
-    predicted_std = float(np.nanstd(predicted_grid))
+    support_cells = _support_cells_for_month(copernicus_monthly, target_month)
+    support_mask = np.zeros((len(lat_values), len(lon_values)), dtype=bool)
+    for i, lat in enumerate(lat_values):
+        for j, lon in enumerate(lon_values):
+            support_mask[i, j] = (round(float(lat), 6), round(float(lon), 6)) in support_cells
+    if not support_mask.any():
+        raise RealDataLoadError("No supported Copernicus ocean cells were available for provisional inference.")
+
+    gy, gx = np.gradient(predicted_grid)
+    gradient_grid = np.sqrt((gy**2) + (gx**2))
+    predicted_grid = _smooth_spatial_grid(predicted_grid, support_mask, passes=2)
+    supported_predictions = predicted_grid[support_mask]
+    supported_gradients = gradient_grid[support_mask]
+    predicted_mean = float(np.nanmean(supported_predictions))
+    predicted_std = float(np.nanstd(supported_predictions))
     deviation_scale = max(predicted_std, 0.2)
+    gradient_scale = max(float(np.nanstd(supported_gradients)), 0.08)
     rows: list[FluxPoint] = []
-    anomalies: list[AnomalyRecord] = []
+    anomaly_candidates: list[AnomalyRecord] = []
     for i, lat in enumerate(lat_values):
         for j, lon in enumerate(lon_values):
             if not _in_region(float(lat), float(lon), region):
                 continue
+            if not support_mask[i, j]:
+                continue
             predicted_flux = float(predicted_grid[i, j])
             model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
+            gradient_strength = float(gradient_grid[i, j]) / gradient_scale
             current_u = float(feature_grid[2, i, j] * 3.0)
             current_v = float(feature_grid[3, i, j] * 3.0)
             current_speed = math.sqrt((current_u**2) + (current_v**2))
-            weakening = model_deviation * 0.35
-            route_priority = max(0.0, model_deviation * 0.9 + current_speed * 0.45 + (wind_default / 24.0))
-            anomaly_score = min(1.0, model_deviation * 0.45 + current_speed * 0.05)
+            latitude_weight = _operational_latitude_weight(float(lat))
+            weakening = max(0.0, ((model_deviation * 0.22) + (gradient_strength * 0.28)) * latitude_weight)
+            route_priority = max(
+                0.0,
+                (model_deviation * 0.55 + gradient_strength * 0.45 + current_speed * 0.22 + (wind_default / 32.0))
+                * latitude_weight,
+            )
+            anomaly_score = min(
+                1.0,
+                (model_deviation * 0.32 + gradient_strength * 0.46 + current_speed * 0.03) * latitude_weight,
+            )
+            deviation_pct = round((model_deviation * 35.0 + gradient_strength * 45.0) * latitude_weight, 1)
             rows.append(
                 FluxPoint(
                     lat=float(lat),
@@ -398,19 +485,21 @@ def build_provisional_real_grid_bundle(
                     source="MODEL",
                 )
             )
-            if anomaly_score >= 0.35 and len(anomalies) < 24:
-                anomalies.append(
+            if anomaly_score >= 0.22 and deviation_pct >= 6.0:
+                anomaly_candidates.append(
                     AnomalyRecord(
                         id=f"provisional-{target_month[0]}-{target_month[1]}-{i}-{j}",
                         lat=float(lat),
                         lon=float(lon),
                         region_name=f"Cell {float(lat):.1f}, {float(lon):.1f}",
                         anomaly_score=round(anomaly_score, 4),
-                        deviation_pct=round(model_deviation * 100.0, 1),
+                        deviation_pct=deviation_pct,
                         detected_at=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
                         severity="critical" if anomaly_score >= 0.8 else "high" if anomaly_score >= 0.55 else "medium",
                     )
                 )
+
+    anomalies = _select_spaced_anomalies(anomaly_candidates, limit=24, min_distance_deg=8.0 if region == "global" else 4.0)
 
     mean_flux = sum(row.co2_flux for row in rows) / max(len(rows), 1)
     sink_area_pct = sum(1 for row in rows if row.co2_flux < 0) / max(len(rows), 1) * 100
@@ -430,6 +519,7 @@ def build_provisional_real_grid_bundle(
         "trained_month_window": int(trainer.expected_month_window()),
         "effective_inference_month_window": 1,
         "observed_support_cells": 0,
+        "supported_ocean_cells": int(support_mask.sum()),
     }
     return RealGridBundle(rows=rows, metadata=metadata, anomalies=anomalies)
 
@@ -472,20 +562,52 @@ def build_real_grid_bundle(
     sequence_months = months[target_index - month_window : target_index]
     sequence = np.stack([monthly_features[item] for item in sequence_months], axis=0)
     predicted_grid = trainer.predict_spatial_sequence(sequence, monthly_atm[target_month])
-    predicted_mean = float(np.nanmean(predicted_grid))
-    predicted_std = float(np.nanstd(predicted_grid))
+    support_cells = _support_cells_for_month(copernicus_monthly, target_month)
+    support_mask = np.zeros((len(lat_values), len(lon_values)), dtype=bool)
+    for i, lat in enumerate(lat_values):
+        for j, lon in enumerate(lon_values):
+            support_mask[i, j] = (round(float(lat), 6), round(float(lon), 6)) in support_cells
+    if not support_mask.any():
+        raise RealDataLoadError(f"No supported Copernicus ocean cells were available for {target_month[0]}-{target_month[1]:02d}.")
+    gy, gx = np.gradient(predicted_grid)
+    gradient_grid = np.sqrt((gy**2) + (gx**2))
+    if observed_flux:
+        observed_pairs = [
+            (predicted_grid[i, j], observed_flux[(round(float(lat_values[i]), 6), round(float(lon_values[j]), 6))])
+            for i in range(len(lat_values))
+            for j in range(len(lon_values))
+            if support_mask[i, j]
+            and (round(float(lat_values[i]), 6), round(float(lon_values[j]), 6)) in observed_flux
+        ]
+        if len(observed_pairs) >= 8:
+            predicted_obs = np.array([item[0] for item in observed_pairs], dtype=np.float32)
+            observed_obs = np.array([item[1] for item in observed_pairs], dtype=np.float32)
+            pred_center = float(np.median(predicted_obs))
+            obs_center = float(np.median(observed_obs))
+            pred_spread = max(float(np.std(predicted_obs)), 1e-3)
+            obs_spread = max(float(np.std(observed_obs)), 1e-3)
+            spread_scale = float(np.clip(obs_spread / pred_spread, 0.7, 1.4))
+            predicted_grid = ((predicted_grid - pred_center) * spread_scale) + obs_center
+    predicted_grid = _smooth_spatial_grid(predicted_grid, support_mask, passes=2)
+    supported_predictions = predicted_grid[support_mask]
+    supported_gradients = gradient_grid[support_mask]
+    predicted_mean = float(np.nanmean(supported_predictions))
+    predicted_std = float(np.nanstd(supported_predictions))
     deviation_scale = max(predicted_std, 0.2)
+    gradient_scale = max(float(np.nanstd(supported_gradients)), 0.08)
 
     era_wind = _scalar_month_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
     observed_flux = _build_observed_flux_grid(socat_url, atmospheric, target_month, resolution, era_wind)
     target_features = monthly_features[target_month]
 
     rows: list[FluxPoint] = []
-    anomalies: list[AnomalyRecord] = []
+    anomaly_candidates: list[AnomalyRecord] = []
     observed_support_cells = 0
     for i, lat in enumerate(lat_values):
         for j, lon in enumerate(lon_values):
             if not _in_region(float(lat), float(lon), region):
+                continue
+            if not support_mask[i, j]:
                 continue
             predicted_flux = float(predicted_grid[i, j])
             cell_key = (round(float(lat), 6), round(float(lon), 6))
@@ -494,12 +616,31 @@ def build_real_grid_bundle(
                 observed_support_cells += 1
             observed_gap = abs(observed_value - predicted_flux) if cell_key in observed_flux else 0.0
             model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
-            weakening = max(observed_gap, model_deviation * 0.35)
+            gradient_strength = float(gradient_grid[i, j]) / gradient_scale
+            latitude_weight = _operational_latitude_weight(float(lat))
+            weakening = max(observed_gap, model_deviation * 0.35) * latitude_weight
             current_u = float(target_features[2, i, j] * 3.0)
             current_v = float(target_features[3, i, j] * 3.0)
             current_speed = math.sqrt((current_u**2) + (current_v**2))
-            route_priority = max(0.0, observed_gap * 1.4 + model_deviation * 0.9 + current_speed * 0.45 + (era_wind / 24.0))
-            anomaly_score = min(1.0, observed_gap * 0.45 + model_deviation * 0.35 + current_speed * 0.06)
+            route_priority = max(
+                0.0,
+                (observed_gap * 1.1 + model_deviation * 0.45 + gradient_strength * 0.35 + current_speed * 0.2 + (era_wind / 32.0))
+                * latitude_weight,
+            )
+            anomaly_score = min(
+                1.0,
+                (observed_gap * 0.4 + model_deviation * 0.2 + gradient_strength * 0.32 + current_speed * 0.04)
+                * latitude_weight,
+            )
+            deviation_pct = round(
+                (
+                    (observed_gap / max(abs(predicted_flux), 0.25)) * 100.0
+                    + model_deviation * 28.0
+                    + gradient_strength * 30.0
+                )
+                * latitude_weight,
+                1,
+            )
             rows.append(
                 FluxPoint(
                     lat=float(lat),
@@ -518,19 +659,21 @@ def build_real_grid_bundle(
                     source="MODEL",
                 )
             )
-            if anomaly_score >= 0.35 and len(anomalies) < 24:
-                anomalies.append(
+            if anomaly_score >= 0.22 and deviation_pct >= 6.0:
+                anomaly_candidates.append(
                     AnomalyRecord(
                         id=f"real-{target_month[0]}-{target_month[1]}-{i}-{j}",
                         lat=float(lat),
                         lon=float(lon),
                         region_name=f"Cell {float(lat):.1f}, {float(lon):.1f}",
                         anomaly_score=round(anomaly_score, 4),
-                        deviation_pct=round(((observed_value - predicted_flux) / max(abs(predicted_flux), 0.25)) * 100.0, 1),
+                        deviation_pct=deviation_pct,
                         detected_at=datetime(target_month[0], target_month[1], 1, tzinfo=reference_now.tzinfo),
                         severity="critical" if anomaly_score >= 0.8 else "high" if anomaly_score >= 0.55 else "medium",
                     )
                 )
+
+    anomalies = _select_spaced_anomalies(anomaly_candidates, limit=24, min_distance_deg=8.0 if region == "global" else 4.0)
 
     mean_flux = sum(row.co2_flux for row in rows) / max(len(rows), 1)
     sink_area_pct = sum(1 for row in rows if row.co2_flux < 0) / max(len(rows), 1) * 100
@@ -550,6 +693,7 @@ def build_real_grid_bundle(
         "trained_month_window": trained_month_window,
         "effective_inference_month_window": month_window,
         "observed_support_cells": observed_support_cells,
+        "supported_ocean_cells": int(support_mask.sum()),
     }
     return RealGridBundle(rows=rows, metadata=metadata, anomalies=anomalies)
 

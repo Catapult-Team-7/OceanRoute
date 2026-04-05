@@ -43,11 +43,23 @@ function coordinateOf(feature) {
 }
 
 export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
-  const candidateCells = points.filter(
-    (point) =>
-      (point.properties.route_priority || 0) >= (verifiedMap ? 0.65 : 0.5) ||
-      (point.properties.weakening_score || 0) >= (verifiedMap ? 0.35 : 0.22) ||
-      (point.properties.anomaly_score || 0) >= (verifiedMap ? 0.7 : 0.5)
+  const rankedPoints = [...points]
+    .filter((point) => point?.properties)
+    .sort(
+      (a, b) =>
+        ((b.properties.route_priority || 0) * 1.2 +
+          (b.properties.weakening_score || 0) +
+          (b.properties.anomaly_score || 0) * 0.9) -
+        ((a.properties.route_priority || 0) * 1.2 +
+          (a.properties.weakening_score || 0) +
+          (a.properties.anomaly_score || 0) * 0.9)
+    );
+  const candidateCells = rankedPoints.filter(
+    (point, index) =>
+      index < 120 ||
+      (point.properties.route_priority || 0) >= (verifiedMap ? 0.35 : 0.15) ||
+      (point.properties.weakening_score || 0) >= (verifiedMap ? 0.18 : 0.08) ||
+      (point.properties.anomaly_score || 0) >= (verifiedMap ? 0.25 : 0.12)
   );
   if (!candidateCells.length) return [];
 
@@ -127,13 +139,21 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
       lonSum: 0,
       intensity: 0,
       nearestPort: null,
+      routeTarget: null,
+      routePriority: 0,
+      weakening: 0,
+      anomalyScore: 0,
     };
     current.items.push(item);
     current.weightSum += weight;
     current.latSum += item.lat * weight;
     current.lonSum += item.lon * weight;
-    current.intensity = Math.max(current.intensity, item.intensity || 0);
+    current.intensity = Math.max(current.intensity, item.intensity || item.routePriority || 0);
     current.nearestPort = current.nearestPort || item.nearest_port || null;
+    current.routeTarget = current.routeTarget || item.routeTarget || null;
+    current.routePriority = Math.max(current.routePriority, item.routePriority || item.intensity || 0);
+    current.weakening = Math.max(current.weakening, item.weakening || 0);
+    current.anomalyScore = Math.max(current.anomalyScore, item.anomalyScore || 0);
     groups.set(key, current);
   }
 
@@ -148,19 +168,22 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
       lon: normalizeLon(group.lonSum / Math.max(group.weightSum, 0.001)),
       clusterSize: group.items.length,
       intensity: group.intensity,
-      routeTarget: group.nearestPort
+      routePriority: group.routePriority,
+      weakening: group.weakening,
+      anomalyScore: group.anomalyScore,
+      routeTarget: group.routeTarget || (group.nearestPort
         ? {
             name: group.nearestPort.name,
             lat: group.nearestPort.lat,
             lon: group.nearestPort.lon,
             country: group.nearestPort.country,
           }
-        : null,
+        : null),
       observed: group.items.some((item) => item.observed),
       source: group.items[0].source,
       metadata: group.items[0].metadata || {},
     }))
-    .sort((a, b) => (b.intensity || 0) - (a.intensity || 0));
+    .sort((a, b) => (b.routePriority || b.intensity || 0) - (a.routePriority || a.intensity || 0));
 }
 
 export function buildTopMissionTargets(points, anomalies, zoom = 1.5, verifiedMap = false) {

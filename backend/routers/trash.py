@@ -34,6 +34,16 @@ def _distance_score(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> f
     return ((lat_a - lat_b) ** 2 + (lon_a - lon_b) ** 2) ** 0.5
 
 
+def _select_spaced_rows(rows, *, limit: int, min_distance_deg: float):
+    selected = []
+    for row in rows:
+        if all(_distance_score(row.lat, row.lon, item.lat, item.lon) >= min_distance_deg for item in selected):
+            selected.append(row)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _predicted_trash_hotspots(
     repo: DemoOceanRepository,
     *,
@@ -59,8 +69,14 @@ def _predicted_trash_hotspots(
         if (row.route_priority or 0.0) >= 0.2 or (row.weakening_score or 0.0) >= 0.15 or (row.anomaly_score or 0.0) >= 0.2
     ][: max(limit * 3, 12)]
 
+    spaced_candidates = _select_spaced_rows(
+        candidates,
+        limit=limit,
+        min_distance_deg=10.0 if region == "global" else 5.0,
+    )
+
     hotspots: list[TrashHotspot] = []
-    for index, row in enumerate(candidates[:limit]):
+    for index, row in enumerate(spaced_candidates):
         port = nearest_port(row.lat, row.lon, ports=ports) if ports else None
         cross_check = None
         if observed_items:

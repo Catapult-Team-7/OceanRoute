@@ -135,9 +135,10 @@ export default function OceanMap() {
         getPosition: (d) => d.geometry.coordinates,
         radiusUnits: "meters",
         getRadius: (d) => 65000 + Math.min(Math.abs(d.properties.predicted_flux), 4) * 18000,
-        getFillColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 112 : 58],
-        getLineColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 190 : 112],
-        lineWidthMinPixels: viewState.zoom > 2 ? 1 : 0.5,
+        radiusMinPixels: selectedRegion === "global" ? 2.5 : 3.5,
+        getFillColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 156 : 110],
+        getLineColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 225 : 180],
+        lineWidthMinPixels: viewState.zoom > 2 ? 1.2 : 0.8,
         stroked: true,
         pickable: true,
       }),
@@ -158,11 +159,12 @@ export default function OceanMap() {
         id: "sink-nodes",
         data: hotspotNodes,
         getPosition: (d) => d.geometry.coordinates,
-        getRadius: (d) => 10000 + Math.abs(d.properties.predicted_flux) * 6000,
+        getRadius: (d) => 24000 + Math.abs(d.properties.predicted_flux) * 12000 + (d.properties.weakening_score || 0) * 42000,
+        radiusMinPixels: selectedRegion === "global" ? 6 : 8,
         getFillColor: (d) =>
-          d.properties.predicted_flux < 0 ? [64, 219, 168, 72] : [255, 135, 102, 72],
-        getLineColor: [214, 244, 255, 72],
-        lineWidthMinPixels: 1,
+          d.properties.predicted_flux < 0 ? [64, 219, 168, 130] : [255, 135, 102, 130],
+        getLineColor: [214, 244, 255, 190],
+        lineWidthMinPixels: 1.6,
         stroked: true,
         pickable: true,
       }),
@@ -171,9 +173,10 @@ export default function OceanMap() {
         data: weakeningZones,
         getPosition: (d) => d.geometry.coordinates,
         getRadius: (d) => 22000 + d.properties.weakening_score * 52000,
-        getFillColor: [255, 114, 94, 28],
-        getLineColor: [255, 184, 116, 120],
-        lineWidthMinPixels: 1,
+        radiusMinPixels: selectedRegion === "global" ? 8 : 10,
+        getFillColor: [255, 114, 94, 54],
+        getLineColor: [255, 184, 116, 170],
+        lineWidthMinPixels: 1.2,
         stroked: true,
         pickable: true,
       }),
@@ -182,9 +185,10 @@ export default function OceanMap() {
         data: anomalies,
         getPosition: (d) => [d.lon, d.lat],
         getRadius: (d) => 90000 + d.anomaly_score * 150000,
-        getFillColor: [255, 90, 95, 78],
-        getLineColor: [255, 220, 140, 148],
-        lineWidthMinPixels: 1,
+        radiusMinPixels: selectedRegion === "global" ? 10 : 12,
+        getFillColor: [255, 90, 95, 110],
+        getLineColor: [255, 220, 140, 210],
+        lineWidthMinPixels: 1.6,
         stroked: true,
         pickable: true,
       }));
@@ -195,12 +199,13 @@ export default function OceanMap() {
         data: trashTargets,
         getPosition: (d) => [d.lon, d.lat],
         getRadius: (d) => 60000 + (d.clusterSize || 1) * 15000 + (d.routePriority || d.intensity || 0) * 40000,
+        radiusMinPixels: selectedRegion === "global" ? 12 : 14,
         getFillColor: (d) =>
           d.observed
-            ? [255, 174, 66, 54 + Math.round(Math.min(d.intensity || 0, 1.4) * 80)]
-            : [255, 196, 61, 42 + Math.round(Math.min(d.routePriority || 0, 1.4) * 72)],
+            ? [255, 174, 66, 90 + Math.round(Math.min(d.intensity || 0, 1.4) * 80)]
+            : [255, 196, 61, 80 + Math.round(Math.min(d.routePriority || 0, 1.4) * 72)],
         getLineColor: (d) => (d.observed ? [255, 232, 188, 200] : [255, 230, 160, 180]),
-        lineWidthMinPixels: 3,
+        lineWidthMinPixels: 4,
         stroked: true,
         pickable: true,
       }),
@@ -282,7 +287,13 @@ export default function OceanMap() {
         getTooltip={tooltipText}
       >
         <Suspense fallback={null}>
-          <MapLibreSurface basemapStyle={basemapStyle} />
+          <MapLibreSurface
+            basemapStyle={basemapStyle}
+            co2Hotspots={hotspotNodes}
+            trashTargets={trashTargets}
+            routeSegments={routeSegments}
+            anomalies={anomalies}
+          />
         </Suspense>
       </DeckGL>
       {!verifiedMap ? (
@@ -290,7 +301,7 @@ export default function OceanMap() {
           <strong>Verified CO2 layers are still catching up.</strong>
           <span>
             {trashTargets.length
-              ? "Trash and routing overlays are shown only from measured feeds while the CO2 surface is being verified. "
+              ? "Trash and routing overlays are shown from the model-first transport prediction while the CO2 surface is being verified. "
               : ""}
             {sourceSummary || "The current CO2 layer is provisional. It uses only real data paths and stays limited until the checkpoint-backed grid is ready."}
           </span>

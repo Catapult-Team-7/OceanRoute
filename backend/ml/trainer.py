@@ -57,16 +57,37 @@ DEFAULT_EXTERNAL_ERA5_PATH = "~/OceanPulseData/ERA"
 RECOMMENDED_COPERNICUS_CURRENTS_DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_SALINITY_DATASET = "cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m"
 RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET = "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m"
-HACKATHON_COPERNICUS_REGION_NOTES = "min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40"
-HACKATHON_COPERNICUS_DEPTH_NOTES = "min_depth=0;max_depth=1"
+GLOBAL_COPERNICUS_REGION_NOTES = "min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80"
+SURFACE_COPERNICUS_DEPTH_NOTES = "min_depth=0;max_depth=1"
 DEFAULT_COPERNICUS_NOTES = (
     f"currents_dataset_id={RECOMMENDED_COPERNICUS_CURRENTS_DATASET};"
     f"salinity_dataset_id={RECOMMENDED_COPERNICUS_SALINITY_DATASET};"
     f"temperature_dataset_id={RECOMMENDED_COPERNICUS_TEMPERATURE_DATASET};"
-    f"{HACKATHON_COPERNICUS_REGION_NOTES};"
-    f"{HACKATHON_COPERNICUS_DEPTH_NOTES};"
+    f"{GLOBAL_COPERNICUS_REGION_NOTES};"
+    f"{SURFACE_COPERNICUS_DEPTH_NOTES};"
     "path=Training_Data/Copernicus"
 )
+
+
+def _smooth_prediction_grid(values: np.ndarray, passes: int = 2) -> np.ndarray:
+    smoothed = np.asarray(values, dtype=np.float32).copy()
+    kernel = np.array(
+        [
+            [1.0, 2.0, 1.0],
+            [2.0, 4.0, 2.0],
+            [1.0, 2.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    kernel /= float(kernel.sum())
+    for _ in range(max(1, passes)):
+        padded = np.pad(smoothed, ((1, 1), (1, 1)), mode="edge")
+        next_grid = np.zeros_like(smoothed, dtype=np.float32)
+        for di in range(3):
+            for dj in range(3):
+                next_grid += padded[di : di + smoothed.shape[0], dj : dj + smoothed.shape[1]] * kernel[di, dj]
+        smoothed = next_grid
+    return smoothed
 
 
 REAL_DATA_APIS = [
@@ -247,7 +268,8 @@ class MLTrainerService:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.state = TrainingState(
-            config={"epochs": 18, "learning_rate": 0.05, "month_window": 12, "resolution": "2deg"},
+            config={"epochs": 24, "learning_rate": 0.005, "month_window": 12, "resolution": "2deg"},
+            
             model_summary={
                 "mode": "real_monthly_convlstm",
                 "target": "co2_flux",
@@ -337,8 +359,8 @@ class MLTrainerService:
 
     def _merge_training_config(self, config: dict | None = None) -> dict:
         return {
-            "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 18))),
-            "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.05))),
+            "epochs": int((config or {}).get("epochs", self.state.config.get("epochs", 24))),
+            "learning_rate": float((config or {}).get("learning_rate", self.state.config.get("learning_rate", 0.005))),
             "month_window": int((config or {}).get("month_window", self.state.config.get("month_window", 12))),
             "resolution": str((config or {}).get("resolution", self.state.config.get("resolution", "2deg"))),
             "quick_test": bool((config or {}).get("quick_test", False)),
@@ -522,7 +544,7 @@ class MLTrainerService:
             x_tensor = torch.tensor(feature_sequence[None, ...], dtype=torch.float32)
             atm_tensor = torch.tensor([[atmospheric_co2]], dtype=torch.float32)
             prediction = model(x_tensor, atm_tensor)
-        return prediction[0, 0].detach().cpu().numpy()
+        return _smooth_prediction_grid(prediction[0, 0].detach().cpu().numpy(), passes=2)
 
     def start_training(self, config: dict | None = None):
         with self._lock:
@@ -771,6 +793,11 @@ class MLTrainerService:
             val_dataset = Subset(dataset, list(range(split_idx, len(dataset))))
             train_loader = DataLoader(train_dataset, batch_size=min(2, len(train_dataset)), shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+            train_indices = list(range(0, split_idx))
+            train_mask = dataset.mask[train_indices]
+            train_targets = dataset.y[train_indices]
+            train_valid_targets = train_targets[train_mask > 0]
+            baseline_flux = float(train_valid_targets.mean().item()) if train_valid_targets.numel() else 0.0
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = OceanPulseLSTM(in_channels=len(tensor_build.feature_names)).to(device)
@@ -881,8 +908,14 @@ class MLTrainerService:
                     ss_res = float(np.sum((y_pred - y_true) ** 2))
                     ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
                     val_r2 = 1 - ss_res / ss_tot if ss_tot else float("nan")
+                    baseline_pred = np.full_like(y_true, baseline_flux)
+                    baseline_mae = float(np.mean(np.abs(baseline_pred - y_true)))
+                    baseline_ss_res = float(np.sum((baseline_pred - y_true) ** 2))
+                    baseline_r2 = 1 - baseline_ss_res / ss_tot if ss_tot else float("nan")
                 else:
                     val_r2 = float("nan")
+                    baseline_mae = float("nan")
+                    baseline_r2 = float("nan")
                 scheduler.step()
 
                 if val_loss < best_val:
@@ -905,6 +938,9 @@ class MLTrainerService:
                         "val_loss": round(val_loss, 5),
                         "mae": round(mae, 5),
                         "r2": round(val_r2, 5) if np.isfinite(val_r2) else None,
+                        "baseline_mae": round(baseline_mae, 5) if np.isfinite(baseline_mae) else None,
+                        "baseline_r2": round(baseline_r2, 5) if np.isfinite(baseline_r2) else None,
+                        "beats_baseline": bool(np.isfinite(mae) and np.isfinite(baseline_mae) and mae < baseline_mae),
                         "samples": int(len(dataset)),
                         "train_samples": int(len(train_dataset)),
                         "val_samples": int(len(val_dataset)),
@@ -1008,6 +1044,9 @@ class MLTrainerService:
                     "detail": "Training completed and checkpoint saved.",
                     "mae": round(best_mae, 5) if np.isfinite(best_mae) else None,
                     "r2": round(best_r2, 5) if np.isfinite(best_r2) else None,
+                    "baseline_mae": round(baseline_mae, 5) if np.isfinite(baseline_mae) else None,
+                    "baseline_r2": round(baseline_r2, 5) if np.isfinite(baseline_r2) else None,
+                    "beats_baseline": bool(np.isfinite(best_mae) and np.isfinite(baseline_mae) and best_mae < baseline_mae),
                     "surrogate_mae": round(surrogate_mae, 5),
                     "surrogate_r2": round(surrogate_r2, 5),
                     "checkpoint_path": str(checkpoint_path),

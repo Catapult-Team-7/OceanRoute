@@ -219,11 +219,11 @@ class DataConnectorService:
                 "monthly_training": ["uo", "vo", "so", "thetao"],
                 "routing": ["uo", "vo", "zos"],
             },
-            "min_longitude": -160,
-            "max_longitude": -120,
-            "min_latitude": 15,
-            "max_latitude": 40,
-            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;min_depth=0;max_depth=1;path=Training_Data/Copernicus",
+            "min_longitude": -180,
+            "max_longitude": 180,
+            "min_latitude": -80,
+            "max_latitude": 80,
+            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80;min_depth=0;max_depth=1;path=Training_Data/Copernicus",
         }
         output_directory = resolve_copernicus_output_directory(
             note_settings.get("path", "").strip()
@@ -336,7 +336,7 @@ class DataConnectorService:
             "base_url": "https://tds.hycom.org/thredds/dodsC/GLBy0.08/expt_93.0",
             "variables": ["water_u", "water_v"],
             "depth_index": 0,
-            "region": {"min_longitude": -160, "max_longitude": -120, "min_latitude": 15, "max_latitude": 40},
+            "region": {"min_longitude": -180, "max_longitude": 180, "min_latitude": -80, "max_latitude": 80},
         }
         return {
             "connector_id": "noaa_hycom",
