@@ -18,7 +18,7 @@ const supported =
 if (!supported) {
   console.error(
     [
-      `OceanRoute requires Node ${SUPPORTED_MAJOR}.${MIN_MINOR}.x or newer within Node ${SUPPORTED_MAJOR}.x.`,
+      `SeaSweep requires Node ${SUPPORTED_MAJOR}.${MIN_MINOR}.x or newer within Node ${SUPPORTED_MAJOR}.x.`,
       `Current runtime: ${current.normalized}.`,
       "Install and use Node 20.19.x before running dev, build, or test commands.",
     ].join(" "),

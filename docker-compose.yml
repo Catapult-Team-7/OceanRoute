@@ -1,20 +1,19 @@
 services:
   postgres:
     image: postgres:16
-    container_name: oceanroute-postgres
     environment:
-      POSTGRES_DB: oceanroute
-      POSTGRES_USER: oceanroute
-      POSTGRES_PASSWORD: oceanroute
+      POSTGRES_DB: ${SEASWEEP_POSTGRES_DB:-seasweep}
+      POSTGRES_USER: ${SEASWEEP_POSTGRES_USER:-seasweep}
+      POSTGRES_PASSWORD: ${SEASWEEP_POSTGRES_PASSWORD:-seasweep}
     ports:
       - "5432:5432"
     volumes:
-      - oceanroute-postgres-data:/var/lib/postgresql/data
+      - seasweep-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U oceanroute -d oceanroute"]
+      test: ["CMD-SHELL", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 20
 
 volumes:
-  oceanroute-postgres-data:
+  seasweep-postgres-data:

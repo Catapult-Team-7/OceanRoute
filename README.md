@@ -11,7 +11,7 @@ SeaSweep is a floating-debris response platform. The stack is a FastAPI backend 
 ## Repository layout
 
 - `apps/api`: FastAPI app, Alembic-backed schema, forecast/routing/impact services, tests, CLI helpers
-- `apps/web`: Vite/React operatoring dashboard
+- `apps/web`: Vite/React operator dashboard
 - `data`: exports and debug artifacts such as latest forecast, routes, and benchmark reports
 - `infra/windows`: scheduled forecast helpers for Windows ops
 - `scripts`: local bootstrap helpers for DB setup and seeded demo data
@@ -28,19 +28,19 @@ The repo now expects Node `20.19+` on Node 20 with:
 - `engines.node` in the root and web workspace `package.json`
 - fail-fast Node version checks on web `dev`, `build`, and `test`
 
-## Demo Setup
+## Deployment modes
 
 - GitHub Pages is the landing page and the always-working seeded site.
 - The live API runs on another host and powers fresh forecasts, route optimization, and feedback writes.
 - The same frontend can do both depending on `VITE_STATIC_DEMO` and `VITE_API_BASE`.
-- API settings still use the legacy `OCEANROUTE_*` env prefix for now to avoid breaking local setup.
+- SeaSweep env names use the `SEASWEEP_*` prefix. Legacy `OCEANROUTE_*` names still work as fallbacks.
 
 ## Windows local setup
 
 1. Install Python deps:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r apps\api\requirements.txt
@@ -49,14 +49,14 @@ pip install -r apps\api\requirements.txt
 2. Install frontend deps under Node `20.19+` on Node 20:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 npm install --no-audit --no-fund
 ```
 
 3. Bootstrap Postgres and apply Alembic migrations:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 powershell -ExecutionPolicy Bypass -File scripts\bootstrap-db.ps1
 ```
 
@@ -65,7 +65,7 @@ If `.env` does not exist yet, the bootstrap script copies `.env.example` to `.en
 4. Seed the deterministic SF Bay mission scenario:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 powershell -ExecutionPolicy Bypass -File scripts\seed-sample-data.ps1
 ```
 
@@ -84,14 +84,14 @@ That script runs the full seeded loop:
 Start the API:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps\api --reload
 ```
 
 Start the dashboard:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 npm run dev:web
 ```
 
@@ -104,32 +104,32 @@ GitHub Pages cannot host the FastAPI backend, so the default Pages build runs in
 Local GitHub Pages seeded-demo build:
 
 ```bash
-cd /Users/kruz/GithubRepos/Catapult-2026
+cd <repo-root>
 env PATH=/opt/homebrew/opt/node@20/bin:$PATH \
   VITE_STATIC_DEMO=true \
-  VITE_BASE_PATH=/Catapult-2026/ \
+  VITE_BASE_PATH=/your-repo-name/ \
   npm run build --workspace apps/web
 ```
 
 Local GitHub Pages build pointed at a live test API:
 
 ```bash
-cd /Users/kruz/GithubRepos/Catapult-2026
+cd <repo-root>
 env PATH=/opt/homebrew/opt/node@20/bin:$PATH \
   VITE_STATIC_DEMO=false \
   VITE_API_BASE=https://api-test.example.com/api \
-  VITE_BASE_PATH=/Catapult-2026/ \
+  VITE_BASE_PATH=/your-repo-name/ \
   npm run build --workspace apps/web
 ```
 
 Preview that static build locally:
 
 ```bash
-cd /Users/kruz/GithubRepos/Catapult-2026/apps/web
+cd <repo-root>/apps/web
 env PATH=/opt/homebrew/opt/node@20/bin:$PATH npm run preview
 ```
 
-If the API is running on another origin, set `OCEANROUTE_CORS_ALLOWED_ORIGINS` on the backend to include your Pages origin, for example `https://<user>.github.io`.
+If the API is running on another origin, set `SEASWEEP_CORS_ALLOWED_ORIGINS` on the backend to include your Pages origin, for example `https://<user>.github.io`.
 
 The included GitHub Actions workflow in `.github/workflows/deploy-pages.yml` deploys the seeded demo automatically on pushes to `main`. It can also be run manually with `workflow_dispatch` in either:
 
@@ -141,14 +141,14 @@ The included GitHub Actions workflow in `.github/workflows/deploy-pages.yml` dep
 Run a forecast cycle on demand:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 powershell -ExecutionPolicy Bypass -File infra\windows\run_forecast.ps1 -HorizonHours 24 -SourceMode auto
 ```
 
 Register an hourly Windows task:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 powershell -ExecutionPolicy Bypass -File infra\windows\register-forecast-task.ps1 -IntervalMinutes 60
 ```
 
@@ -157,28 +157,28 @@ powershell -ExecutionPolicy Bypass -File infra\windows\register-forecast-task.ps
 Backend tests:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 .\.venv\Scripts\python.exe -m pytest -q apps\api\tests
 ```
 
 Frontend tests:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 npm run test:web
 ```
 
 Frontend typecheck:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 node .\node_modules\typescript\bin\tsc -p apps\web\tsconfig.json --noEmit
 ```
 
 Frontend build:
 
 ```powershell
-cd C:\Users\clewr\Catapult-2026
+Set-Location <repo-root>
 npm run build:web
 ```
 

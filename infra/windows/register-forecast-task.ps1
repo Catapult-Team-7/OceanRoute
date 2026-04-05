@@ -1,5 +1,5 @@
 param(
-    [string]$TaskName = "OceanRoute Forecast Cycle",
+    [string]$TaskName = "SeaSweep Forecast Cycle",
     [int]$IntervalMinutes = 60
 )
 

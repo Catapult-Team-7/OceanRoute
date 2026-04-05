@@ -1,4 +1,4 @@
-"""Initialize OceanRoute operational schema.
+"""Initialize SeaSweep operational schema.
 
 Revision ID: 20260404_0001
 Revises:

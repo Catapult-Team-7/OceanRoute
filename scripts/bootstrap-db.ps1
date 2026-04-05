@@ -25,7 +25,7 @@ try {
 
     $ready = $false
     for ($attempt = 1; $attempt -le 30; $attempt++) {
-        docker compose exec -T postgres pg_isready -U oceanroute -d oceanroute *> $null
+        docker compose exec -T postgres sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' *> $null
         if ($LASTEXITCODE -eq 0) {
             $ready = $true
             break
@@ -39,7 +39,7 @@ try {
 
     & $PythonExe -m alembic upgrade head
 
-    Write-Host "Database is ready."
+    Write-Host "SeaSweep database is ready."
     Write-Host "Next:"
     Write-Host "  1. powershell -ExecutionPolicy Bypass -File scripts\\seed-sample-data.ps1"
     Write-Host "  2. .\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir apps\\api --reload"

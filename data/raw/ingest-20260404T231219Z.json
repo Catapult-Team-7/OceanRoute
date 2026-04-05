@@ -1,5 +1,5 @@
 {
-  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions&application=OceanRoute&station=PCT0181&begin_date=20260404&end_date=20260406&time_zone=gmt&units=metric&interval=h&vel_type=speed_dir&format=json",
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions&application=SeaSweep&station=PCT0181&begin_date=20260404&end_date=20260406&time_zone=gmt&units=metric&interval=h&vel_type=speed_dir&format=json",
   "payload": {
     "current_predictions": {
       "units": "meters, cm/s",

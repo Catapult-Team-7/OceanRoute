@@ -1,4 +1,3 @@
 # Routing Service
 
-Single-vessel route optimization for 24h tactical debris response missions.
-
+Single-vessel route optimization for tactical debris-response missions.

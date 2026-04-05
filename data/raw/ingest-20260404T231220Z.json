@@ -1,5 +1,5 @@
 {
-  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=water_temperature&application=OceanRoute&date=latest&station=9414863&time_zone=gmt&units=metric&format=json",
+  "url": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=water_temperature&application=SeaSweep&date=latest&station=9414863&time_zone=gmt&units=metric&format=json",
   "payload": {
     "metadata": {
       "id": "9414863",
