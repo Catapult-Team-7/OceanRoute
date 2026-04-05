@@ -436,12 +436,14 @@ class HistoricalBackfillRequest(BaseModel):
     chunk_days: int = Field(default=28, ge=1, le=180)
     ensemble_members: int | None = Field(default=None, ge=1, le=32)
     particles_per_member: int | None = Field(default=None, ge=16, le=5000)
+    max_workers: int | None = Field(default=None, ge=1, le=16)
     debris_classes: list[DebrisClass] = Field(default_factory=lambda: ["low", "high"])
 
 
 class HistoricalBackfillTiming(BaseModel):
     region_id: str
     chunk_index: int = Field(ge=1)
+    max_workers: int | None = Field(default=None, ge=1)
     timestamps_in_chunk: int = Field(ge=0)
     runs_created: int = Field(ge=0)
     baseline_artifacts_created: int = Field(ge=0)
@@ -450,6 +452,7 @@ class HistoricalBackfillTiming(BaseModel):
     baseline_ms: float = Field(ge=0.0)
     artifact_write_ms: float = Field(ge=0.0)
     db_write_ms: float = Field(ge=0.0)
+    parallel_overhead_ms: float = Field(default=0.0, ge=0.0)
     total_ms: float = Field(ge=0.0)
 
 
@@ -458,6 +461,7 @@ class HistoricalBackfillResponse(BaseModel):
     source_mode: SourceMode
     days_backfilled: int
     mode: BackfillMode
+    max_workers: int | None = Field(default=None, ge=1)
     runs_created: int
     baseline_artifacts_created: int
     dataset_ready_run_count: int
@@ -516,6 +520,8 @@ class ModelTrainRequest(BaseModel):
     promote_policy: PromotionPolicy = "auto"
     epochs: int = Field(default=2, ge=1, le=50)
     batch_size: int = Field(default=4, ge=1, le=64)
+    num_workers: int = Field(default=4, ge=0, le=32)
+    prefetch_factor: int = Field(default=2, ge=1, le=16)
 
 
 class ModelRegistryEntry(BaseModel):

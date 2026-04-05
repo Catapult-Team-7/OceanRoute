@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -16,9 +17,10 @@ except Exception:  # pragma: no cover
 def _export_torch_model(model, model_path: Path, feature_schema: dict[str, Any]) -> str | None:
     if model is None or torch is None:
         return None
-    model.eval()
+    export_model = copy.deepcopy(model).cpu()
+    export_model.eval()
     try:
-        scripted = torch.jit.script(model)
+        scripted = torch.jit.script(export_model)
         scripted.save(str(model_path))
         return "script"
     except Exception:
@@ -28,7 +30,7 @@ def _export_torch_model(model, model_path: Path, feature_schema: dict[str, Any])
             raise
         _, time_steps, channels, height, width = [int(value) for value in x_shape]
         example_input = torch.zeros((1, time_steps, channels, height, width), dtype=torch.float32)
-        traced = torch.jit.trace(model, example_input)
+        traced = torch.jit.trace(export_model, example_input)
         traced.save(str(model_path))
         return "trace"
 

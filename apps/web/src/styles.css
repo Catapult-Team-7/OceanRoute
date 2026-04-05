@@ -254,8 +254,8 @@ textarea {
 }
 
 .filter-row {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  min-width: min(100%, 440px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: min(100%, 640px);
 }
 
 .filter-row label,

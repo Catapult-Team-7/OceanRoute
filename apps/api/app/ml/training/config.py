@@ -19,6 +19,8 @@ class TrainingConfig:
     device: str = "auto"
     epochs: int = 2
     batch_size: int = 4
+    num_workers: int = 4
+    prefetch_factor: int = 2
     learning_rate: float = 1e-3
     promote_policy: str = "auto"
     training_command: str = ""

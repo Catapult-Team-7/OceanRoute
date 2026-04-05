@@ -33,6 +33,7 @@ data/data_lake/indexes/
 data/data_lake/predictions/
 data/model_registry/
 data/training_runs/
+data/
 *.db
 *.sqlite3
 alembic/__pycache__

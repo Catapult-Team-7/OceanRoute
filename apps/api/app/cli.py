@@ -159,6 +159,8 @@ def _train_model(args: argparse.Namespace) -> None:
                     promote_policy=args.promote_policy,
                     epochs=args.epochs,
                     batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    prefetch_factor=args.prefetch_factor,
                 )
             )
             for region_id in regions:
@@ -175,6 +177,8 @@ def _train_model(args: argparse.Namespace) -> None:
                         promote_policy=args.promote_policy,
                         epochs=args.epochs,
                         batch_size=args.batch_size,
+                        num_workers=args.num_workers,
+                        prefetch_factor=args.prefetch_factor,
                     )
                 )
         else:
@@ -191,6 +195,8 @@ def _train_model(args: argparse.Namespace) -> None:
                     promote_policy=args.promote_policy,
                     epochs=args.epochs,
                     batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    prefetch_factor=args.prefetch_factor,
                 )
             )
         responses = [train_model(request, session) for request in requests]
@@ -242,6 +248,7 @@ def _backfill_history(args: argparse.Namespace) -> None:
                 chunk_days=args.chunk_days,
                 ensemble_members=args.ensemble_members,
                 particles_per_member=args.particles_per_member,
+                max_workers=args.max_workers,
                 debris_classes=["low", "high"],
             ),
             session,
@@ -310,6 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--promote-policy", choices=["auto", "candidate_only", "always_activate"], default="auto")
     train_parser.add_argument("--epochs", type=int, default=2)
     train_parser.add_argument("--batch-size", type=int, default=4)
+    train_parser.add_argument("--num-workers", type=int, default=4)
+    train_parser.add_argument("--prefetch-factor", type=int, default=2)
     train_parser.set_defaults(func=_train_model)
 
     evaluate_parser = subparsers.add_parser("evaluate-model", help="Read the stored evaluation artifact for a model.")
@@ -332,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_parser.add_argument("--chunk-days", type=int, default=28)
     backfill_parser.add_argument("--ensemble-members", type=int, default=None)
     backfill_parser.add_argument("--particles-per-member", type=int, default=None)
+    backfill_parser.add_argument("--max-workers", type=int, default=None)
     backfill_parser.set_defaults(func=_backfill_history)
 
     list_parser = subparsers.add_parser("list-ml", help="List ML datasets and models.")
@@ -353,6 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     ml_train.add_argument("--promote-policy", choices=["auto", "candidate_only", "always_activate"], default="auto")
     ml_train.add_argument("--epochs", type=int, default=2)
     ml_train.add_argument("--batch-size", type=int, default=4)
+    ml_train.add_argument("--num-workers", type=int, default=4)
+    ml_train.add_argument("--prefetch-factor", type=int, default=2)
     ml_train.set_defaults(func=_train_model)
 
     ml_evaluate = ml_subparsers.add_parser("evaluate", help="Read the stored evaluation artifact for a model.")

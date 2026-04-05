@@ -70,6 +70,9 @@ class OceanRouteDataModule(BaseDataModule):
         region_ids: list[str] | None,
         horizons: list[int] | None,
         batch_size: int,
+        num_workers: int = 4,
+        prefetch_factor: int = 2,
+        pin_memory: bool = False,
     ) -> None:
         if not TORCH_AVAILABLE:
             raise ValueError("torch is required to build training dataloaders.")
@@ -79,9 +82,24 @@ class OceanRouteDataModule(BaseDataModule):
         self.region_ids = region_ids
         self.horizons = horizons
         self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.prefetch_factor = prefetch_factor
+        self.pin_memory = pin_memory
         self.train_dataset: SequenceTorchDataset | None = None
         self.val_dataset: SequenceTorchDataset | None = None
         self.test_dataset: SequenceTorchDataset | None = None
+
+    def _loader_kwargs(self, *, shuffle: bool) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "batch_size": self.batch_size,
+            "shuffle": shuffle,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+        }
+        if self.num_workers > 0:
+            kwargs["persistent_workers"] = True
+            kwargs["prefetch_factor"] = self.prefetch_factor
+        return kwargs
 
     def setup(self, stage: str | None = None) -> None:  # pragma: no cover - thin wrapper
         self.train_dataset = SequenceTorchDataset(
@@ -101,10 +119,10 @@ class OceanRouteDataModule(BaseDataModule):
         )
 
     def train_dataloader(self):  # pragma: no cover - thin wrapper
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
+        return DataLoader(self.train_dataset, **self._loader_kwargs(shuffle=True))
 
     def val_dataloader(self):  # pragma: no cover - thin wrapper
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False)
+        return DataLoader(self.val_dataset, **self._loader_kwargs(shuffle=False))
 
     def test_dataloader(self):  # pragma: no cover - thin wrapper
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False)
+        return DataLoader(self.test_dataset, **self._loader_kwargs(shuffle=False))

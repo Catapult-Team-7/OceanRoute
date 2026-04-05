@@ -552,7 +552,8 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
             f"python -m app.cli ml train --architecture {request.architecture} --dataset-id {request.dataset_id} "
             f"--regions {','.join(region_ids)} --horizons {','.join(str(item) for item in effective_horizons)} "
             f"--training-scope {effective_training_scope} --device {request.device} --epochs {request.epochs} "
-            f"--batch-size {request.batch_size} --promote-policy {effective_promotion_policy}"
+            f"--batch-size {request.batch_size} --num-workers {request.num_workers} "
+            f"--prefetch-factor {request.prefetch_factor} --promote-policy {effective_promotion_policy}"
         )
         config = TrainingConfig(
             run_id=training_run_id,
@@ -565,6 +566,8 @@ def train_model(request: ModelTrainRequest, db: Session) -> ModelTrainResponse:
             device=request.device,
             epochs=request.epochs,
             batch_size=request.batch_size,
+            num_workers=request.num_workers,
+            prefetch_factor=request.prefetch_factor,
             promote_policy=effective_promotion_policy,
             training_command=training_command,
         )
@@ -711,13 +714,21 @@ def get_active_model_entry(db: Session, region_id: str, model_id: str | None = N
             if row.model_id == model_id and _row_matches_region(row, region_id):
                 return _to_registry_entry(row)
         return None
-    for row in rows:
-        if row.is_active and row.training_scope == "per_region" and row.region_id == region_id:
-            return _to_registry_entry(row)
-    for row in rows:
-        if row.is_active and row.training_scope == "shared" and region_id in list(row.compatible_regions):
-            return _to_registry_entry(row)
-    return None
+    active_candidates = [
+        row
+        for row in rows
+        if row.is_active and _row_matches_region(row, region_id)
+    ]
+    if not active_candidates:
+        return None
+
+    def _priority(row: ModelRegistryModel) -> tuple[int, int, float]:
+        architecture_priority = 0 if row.architecture in {"temporal_unet", "convlstm"} else 1
+        scope_priority = 0 if row.training_scope == "per_region" else 1
+        return (architecture_priority, scope_priority, -row.created_at.timestamp())
+
+    selected = min(active_candidates, key=_priority)
+    return _to_registry_entry(selected)
 
 
 def get_active_model_payload(db: Session, region_id: str, model_id: str | None = None) -> dict[str, Any] | None:

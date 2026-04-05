@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -659,7 +659,14 @@ def latest_forecast(
     debris_class: str | None = None,
     min_confidence: float = 0.0,
 ) -> ForecastSnapshot | None:
-    run_query = select(ForecastRunModel).join(ForecastStepModel, ForecastStepModel.run_id == ForecastRunModel.id).distinct()
+    step_filters = []
+    if horizon_hour is not None:
+        step_filters.append(ForecastStepModel.horizon_hour == horizon_hour)
+    if debris_class is not None:
+        step_filters.append(ForecastStepModel.debris_class == debris_class)
+    run_query = select(ForecastRunModel).where(
+        ForecastRunModel.steps.any(and_(*step_filters)) if step_filters else ForecastRunModel.steps.any()
+    )
     if region_id is not None:
         run_query = run_query.where(ForecastRunModel.pilot_region == region_id)
     run = db.execute(run_query.order_by(ForecastRunModel.generated_at.desc()).limit(1)).scalar_one_or_none()

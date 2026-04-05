@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, radians, sqrt
 from random import Random
+
+import numpy as np
 
 from app.schemas import DEBRIS_CLASS_METADATA, DriftBaselineInput, GridPoint
 
@@ -19,10 +20,24 @@ class DriftBaselineDiagnostics:
     ensemble_members: int
 
 
-@dataclass
-class Particle:
-    lat: float
-    lon: float
+@dataclass(frozen=True)
+class PreparedGrid:
+    cell_ids: tuple[str, ...]
+    latitudes: np.ndarray
+    longitudes: np.ndarray
+    current_u: np.ndarray
+    current_v: np.ndarray
+    wind_u: np.ndarray
+    wind_v: np.ndarray
+    shoreline: np.ndarray
+    restricted: np.ndarray
+    stokes_u: np.ndarray
+    stokes_v: np.ndarray
+    source_weights: np.ndarray
+    lat_min: float
+    lat_max: float
+    lon_min: float
+    lon_max: float
 
 
 def _seed(payload: DriftBaselineInput) -> int:
@@ -34,140 +49,184 @@ def _windage_fraction(payload: DriftBaselineInput) -> float:
     return max(0.0, payload.windage_factor + class_fraction)
 
 
-def _nearest_point(lat: float, lon: float, grid: list[GridPoint]) -> GridPoint:
-    best_point = grid[0]
-    best_distance = float("inf")
-    for point in grid:
-        distance = ((point.lat - lat) ** 2) + ((point.lon - lon) ** 2)
-        if distance < best_distance:
-            best_distance = distance
-            best_point = point
-    return best_point
-
-
-def _km_to_lat(delta_km: float) -> float:
+def _km_to_lat(delta_km: np.ndarray) -> np.ndarray:
     return delta_km / 111.0
 
 
-def _km_to_lon(delta_km: float, latitude: float) -> float:
-    scale = max(0.2, cos(radians(latitude)))
+def _km_to_lon(delta_km: np.ndarray, latitude: np.ndarray) -> np.ndarray:
+    scale = np.clip(np.cos(np.radians(latitude)), 0.2, None)
     return delta_km / (111.0 * scale)
 
 
-def _stokes_drift(point: GridPoint, payload: DriftBaselineInput) -> tuple[float, float]:
-    shoreline_boost = 0.85 + (point.shoreline_proximity * 0.45)
-    return (
-        point.wind_u * payload.stokes_drift_factor * shoreline_boost,
-        point.wind_v * payload.stokes_drift_factor * shoreline_boost,
-    )
-
-
-def _source_weight(point: GridPoint, payload: DriftBaselineInput) -> float:
-    current_speed = sqrt((point.current_u**2) + (point.current_v**2))
-    wind_speed = sqrt((point.wind_u**2) + (point.wind_v**2))
-    shoreline_bias = 0.55 + (point.shoreline_proximity * 1.1)
+def _source_weights(points: list[GridPoint], payload: DriftBaselineInput) -> np.ndarray:
+    current_u = np.asarray([point.current_u for point in points], dtype=np.float32)
+    current_v = np.asarray([point.current_v for point in points], dtype=np.float32)
+    wind_u = np.asarray([point.wind_u for point in points], dtype=np.float32)
+    wind_v = np.asarray([point.wind_v for point in points], dtype=np.float32)
+    shoreline = np.asarray([point.shoreline_proximity for point in points], dtype=np.float32)
+    restricted = np.asarray([1.0 if point.restricted else 0.0 for point in points], dtype=np.float32)
+    current_speed = np.sqrt((current_u**2) + (current_v**2))
+    wind_speed = np.sqrt((wind_u**2) + (wind_v**2))
+    shoreline_bias = 0.55 + (shoreline * 1.1)
     drift_bias = 0.2 + (current_speed * 0.18) + (wind_speed * 0.015)
     class_bias = 0.12 if payload.debris_class == "high" else 0.05
-    restriction_penalty = 0.82 if point.restricted else 1.0
-    return max(0.05, (shoreline_bias + drift_bias + class_bias) * restriction_penalty)
+    restriction_penalty = np.where(restricted > 0.5, 0.82, 1.0)
+    weights = np.maximum(0.05, (shoreline_bias + drift_bias + class_bias) * restriction_penalty)
+    normalized = weights / np.maximum(np.sum(weights), 1e-6)
+    return normalized.astype(np.float32)
 
 
-def _initialize_particles(payload: DriftBaselineInput, rng: Random) -> list[Particle]:
-    weighted_points = [(point, _source_weight(point, payload)) for point in payload.grid]
-    total_weight = sum(weight for _, weight in weighted_points)
-    particles: list[Particle] = []
-    jitter_km = 0.18
-    for point, weight in weighted_points:
-        target_count = max(1, round((weight / max(total_weight, 1e-6)) * payload.particles_per_member))
-        for _ in range(target_count):
-            lat = point.lat + _km_to_lat(rng.gauss(0.0, jitter_km))
-            lon = point.lon + _km_to_lon(rng.gauss(0.0, jitter_km), point.lat)
-            particles.append(Particle(lat=lat, lon=lon))
-    return particles[: payload.particles_per_member]
-
-
-def _clamp_to_bbox(lat: float, lon: float, payload: DriftBaselineInput) -> tuple[float, float]:
-    latitudes = [point.lat for point in payload.grid]
-    longitudes = [point.lon for point in payload.grid]
-    return (
-        min(max(lat, min(latitudes) - 0.02), max(latitudes) + 0.02),
-        min(max(lon, min(longitudes) - 0.02), max(longitudes) + 0.02),
+def _prepare_grid(payload: DriftBaselineInput) -> PreparedGrid:
+    latitudes = np.asarray([point.lat for point in payload.grid], dtype=np.float32)
+    longitudes = np.asarray([point.lon for point in payload.grid], dtype=np.float32)
+    current_u = np.asarray([point.current_u for point in payload.grid], dtype=np.float32)
+    current_v = np.asarray([point.current_v for point in payload.grid], dtype=np.float32)
+    wind_u = np.asarray([point.wind_u for point in payload.grid], dtype=np.float32)
+    wind_v = np.asarray([point.wind_v for point in payload.grid], dtype=np.float32)
+    shoreline = np.asarray([point.shoreline_proximity for point in payload.grid], dtype=np.float32)
+    restricted = np.asarray([1.0 if point.restricted else 0.0 for point in payload.grid], dtype=np.float32)
+    shoreline_boost = 0.85 + (shoreline * 0.45)
+    stokes_u = wind_u * payload.stokes_drift_factor * shoreline_boost
+    stokes_v = wind_v * payload.stokes_drift_factor * shoreline_boost
+    return PreparedGrid(
+        cell_ids=tuple(point.cell_id for point in payload.grid),
+        latitudes=latitudes,
+        longitudes=longitudes,
+        current_u=current_u,
+        current_v=current_v,
+        wind_u=wind_u,
+        wind_v=wind_v,
+        shoreline=shoreline,
+        restricted=restricted,
+        stokes_u=stokes_u.astype(np.float32),
+        stokes_v=stokes_v.astype(np.float32),
+        source_weights=_source_weights(payload.grid, payload),
+        lat_min=float(np.min(latitudes) - 0.02),
+        lat_max=float(np.max(latitudes) + 0.02),
+        lon_min=float(np.min(longitudes) - 0.02),
+        lon_max=float(np.max(longitudes) + 0.02),
     )
+
+
+def _nearest_indexes(latitudes: np.ndarray, longitudes: np.ndarray, prepared: PreparedGrid) -> np.ndarray:
+    if latitudes.size == 0:
+        return np.zeros((0,), dtype=np.intp)
+    lat_diff = prepared.latitudes[None, :] - latitudes[:, None]
+    lon_diff = prepared.longitudes[None, :] - longitudes[:, None]
+    distances = (lat_diff * lat_diff) + (lon_diff * lon_diff)
+    return np.argmin(distances, axis=1).astype(np.intp)
+
+
+def _initialize_particles(prepared: PreparedGrid, payload: DriftBaselineInput, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    particle_count = payload.particles_per_member
+    source_indexes = rng.choice(len(prepared.cell_ids), size=particle_count, replace=True, p=prepared.source_weights)
+    jitter_km = 0.18
+    latitudes = prepared.latitudes[source_indexes] + _km_to_lat(rng.normal(0.0, jitter_km, size=particle_count)).astype(np.float32)
+    longitudes = prepared.longitudes[source_indexes] + _km_to_lon(
+        rng.normal(0.0, jitter_km, size=particle_count).astype(np.float32),
+        prepared.latitudes[source_indexes],
+    ).astype(np.float32)
+    return latitudes.astype(np.float32), longitudes.astype(np.float32)
 
 
 def _simulate_member(
+    prepared: PreparedGrid,
     payload: DriftBaselineInput,
-    rng: Random,
+    rng: np.random.Generator,
     windage_fraction: float,
-) -> tuple[dict[str, int], dict[str, int], int]:
-    particles = _initialize_particles(payload, rng)
-    density_counts = {point.cell_id: 0 for point in payload.grid}
-    beach_counts = {point.cell_id: 0 for point in payload.grid}
-    beached = 0
+) -> tuple[np.ndarray, np.ndarray, int]:
+    latitudes, longitudes = _initialize_particles(prepared, payload, rng)
+    density_counts = np.zeros(len(prepared.cell_ids), dtype=np.int32)
+    beach_counts = np.zeros(len(prepared.cell_ids), dtype=np.int32)
+    beached_particles = 0
+    diffusion_bias = min(0.12, payload.diffusion_sigma * 0.18)
 
     for _ in range(payload.horizon_hour):
-        survivors: list[Particle] = []
-        for particle in particles:
-            point = _nearest_point(particle.lat, particle.lon, payload.grid)
-            stokes_u, stokes_v = _stokes_drift(point, payload)
-            eastward_km = point.current_u + (point.wind_u * windage_fraction) + stokes_u + rng.gauss(0.0, payload.diffusion_sigma)
-            northward_km = point.current_v + (point.wind_v * windage_fraction) + stokes_v + rng.gauss(0.0, payload.diffusion_sigma)
-            next_lat = particle.lat + _km_to_lat(northward_km)
-            next_lon = particle.lon + _km_to_lon(eastward_km, particle.lat)
-            next_lat, next_lon = _clamp_to_bbox(next_lat, next_lon, payload)
-            next_point = _nearest_point(next_lat, next_lon, payload.grid)
-
-            beach_probability = max(
-                0.0,
-                (next_point.shoreline_proximity - payload.beaching_threshold + 0.12)
-                + (0.08 if next_point.restricted else 0.0)
-                + min(0.12, payload.diffusion_sigma * 0.18),
-            )
-            if beach_probability > 0 and rng.random() < min(0.92, beach_probability):
-                beach_counts[next_point.cell_id] += 1
-                beached += 1
-                continue
-
-            survivors.append(Particle(lat=next_lat, lon=next_lon))
-        particles = survivors
-        if not particles:
+        if latitudes.size == 0:
             break
+        indexes = _nearest_indexes(latitudes, longitudes, prepared)
+        eastward_km = (
+            prepared.current_u[indexes]
+            + (prepared.wind_u[indexes] * windage_fraction)
+            + prepared.stokes_u[indexes]
+            + rng.normal(0.0, payload.diffusion_sigma, size=indexes.shape[0]).astype(np.float32)
+        )
+        northward_km = (
+            prepared.current_v[indexes]
+            + (prepared.wind_v[indexes] * windage_fraction)
+            + prepared.stokes_v[indexes]
+            + rng.normal(0.0, payload.diffusion_sigma, size=indexes.shape[0]).astype(np.float32)
+        )
+        next_latitudes = np.clip(
+            latitudes + _km_to_lat(northward_km).astype(np.float32),
+            prepared.lat_min,
+            prepared.lat_max,
+        )
+        next_longitudes = np.clip(
+            longitudes + _km_to_lon(eastward_km.astype(np.float32), latitudes).astype(np.float32),
+            prepared.lon_min,
+            prepared.lon_max,
+        )
+        next_indexes = _nearest_indexes(next_latitudes, next_longitudes, prepared)
+        beach_probability = np.maximum(
+            0.0,
+            (prepared.shoreline[next_indexes] - payload.beaching_threshold + 0.12)
+            + (prepared.restricted[next_indexes] * 0.08)
+            + diffusion_bias,
+        )
+        beached_mask = (beach_probability > 0.0) & (
+            rng.random(size=next_indexes.shape[0]).astype(np.float32) < np.minimum(0.92, beach_probability)
+        )
+        if np.any(beached_mask):
+            np.add.at(beach_counts, next_indexes[beached_mask], 1)
+            beached_particles += int(np.sum(beached_mask))
+        survivor_mask = ~beached_mask
+        latitudes = next_latitudes[survivor_mask]
+        longitudes = next_longitudes[survivor_mask]
 
-    for particle in particles:
-        point = _nearest_point(particle.lat, particle.lon, payload.grid)
-        density_counts[point.cell_id] += 1
+    if latitudes.size:
+        final_indexes = _nearest_indexes(latitudes, longitudes, prepared)
+        np.add.at(density_counts, final_indexes, 1)
 
-    return density_counts, beach_counts, beached
+    return density_counts, beach_counts, beached_particles
 
 
 def run_drift_baseline_ensemble(payload: DriftBaselineInput) -> DriftBaselineDiagnostics:
-    rng = Random(_seed(payload))
+    prepared = _prepare_grid(payload)
+    seed_rng = Random(_seed(payload))
     windage_fraction = _windage_fraction(payload)
     scale = len(payload.grid) * max(payload.source_strength, 0.1) / max(payload.particles_per_member, 1)
-    density_members = {point.cell_id: [] for point in payload.grid}
-    beach_members = {point.cell_id: [] for point in payload.grid}
+    density_members = np.zeros((payload.ensemble_members, len(prepared.cell_ids)), dtype=np.float32)
+    beach_members = np.zeros((payload.ensemble_members, len(prepared.cell_ids)), dtype=np.float32)
     beached_particles = 0
 
     for ensemble_index in range(payload.ensemble_members):
-        member_rng = Random(rng.randint(0, 10_000_000) + ensemble_index)
-        density_counts, beach_counts, member_beached = _simulate_member(payload, member_rng, windage_fraction)
+        member_seed = seed_rng.randint(0, 10_000_000) + ensemble_index
+        member_rng = np.random.default_rng(member_seed)
+        density_counts, beach_counts, member_beached = _simulate_member(prepared, payload, member_rng, windage_fraction)
         beached_particles += member_beached
-        for point in payload.grid:
-            density_members[point.cell_id].append(density_counts[point.cell_id] * scale)
-            beach_members[point.cell_id].append(beach_counts[point.cell_id] / max(payload.particles_per_member, 1))
+        density_members[ensemble_index] = density_counts.astype(np.float32) * scale
+        beach_members[ensemble_index] = beach_counts.astype(np.float32) / max(payload.particles_per_member, 1)
 
-    density: dict[str, float] = {}
-    ensemble_spread: dict[str, float] = {}
-    beaching_fraction: dict[str, float] = {}
-    stokes_drift = {point.cell_id: _stokes_drift(point, payload) for point in payload.grid}
-    for point in payload.grid:
-        member_values = density_members[point.cell_id]
-        member_mean = sum(member_values) / len(member_values)
-        member_variance = sum((value - member_mean) ** 2 for value in member_values) / len(member_values)
-        density[point.cell_id] = round(max(0.0, member_mean), 4)
-        ensemble_spread[point.cell_id] = round(member_variance**0.5, 4)
-        beaching_fraction[point.cell_id] = round(sum(beach_members[point.cell_id]) / len(beach_members[point.cell_id]), 4)
-
+    density_mean = np.mean(density_members, axis=0)
+    density_spread = np.std(density_members, axis=0)
+    beaching_mean = np.mean(beach_members, axis=0)
+    density = {
+        cell_id: round(max(0.0, float(density_mean[index])), 4)
+        for index, cell_id in enumerate(prepared.cell_ids)
+    }
+    ensemble_spread = {
+        cell_id: round(float(density_spread[index]), 4)
+        for index, cell_id in enumerate(prepared.cell_ids)
+    }
+    beaching_fraction = {
+        cell_id: round(float(beaching_mean[index]), 4)
+        for index, cell_id in enumerate(prepared.cell_ids)
+    }
+    stokes_drift = {
+        cell_id: (round(float(prepared.stokes_u[index]), 4), round(float(prepared.stokes_v[index]), 4))
+        for index, cell_id in enumerate(prepared.cell_ids)
+    }
     return DriftBaselineDiagnostics(
         density=density,
         ensemble_spread=ensemble_spread,

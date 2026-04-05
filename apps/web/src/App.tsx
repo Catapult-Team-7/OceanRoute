@@ -9,6 +9,7 @@ import type {
   HealthStatus,
   ImpactDashboard,
   RecommendedMode,
+  RegionInfo,
   RoutePlan,
 } from "./types";
 
@@ -166,6 +167,8 @@ function confidenceBand(snapshot: ForecastSnapshot | null): string {
 
 export function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [regions, setRegions] = useState<RegionInfo[]>([]);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [forecast, setForecast] = useState<ForecastSnapshot | null>(null);
   const [impact, setImpact] = useState<ImpactDashboard | null>(null);
   const [route, setRoute] = useState<RoutePlan | null>(null);
@@ -196,12 +199,14 @@ export function App() {
   const [forecastMissing, setForecastMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string>("");
+  const [actionMessage, setActionMessage] = useState<string>("");
 
   useEffect(() => {
     void (async () => {
       try {
         const status = await requestJson<HealthStatus>("/health");
         setHealth(status);
+        setSelectedRegionId(status.pilot_region);
         setFilters((current) => ({ ...current, horizonHour: status.default_horizon_hours }));
         setRouteForm((current) => ({
           ...current,
@@ -219,6 +224,33 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
+        const availableRegions = await requestJson<RegionInfo[]>("/regions");
+        setRegions(availableRegions);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to load regions.");
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedRegionId || regions.length === 0) {
+      return;
+    }
+    const selectedRegion = regions.find((region) => region.id === selectedRegionId);
+    if (!selectedRegion) {
+      return;
+    }
+    setRoute(null);
+    setRouteForm((current) => ({
+      ...current,
+      depotLat: selectedRegion.default_depot_lat,
+      depotLon: selectedRegion.default_depot_lon,
+    }));
+  }, [selectedRegionId, regions]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
         const dashboard = await requestJson<ImpactDashboard>("/impact/dashboard");
         setImpact(dashboard);
       } catch (caught) {
@@ -229,10 +261,14 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
+      if (!selectedRegionId) {
+        return;
+      }
       setLoadingForecast(true);
       setError(null);
       try {
         const params = new URLSearchParams();
+        params.set("region_id", selectedRegionId);
         params.set("horizon_hour", String(filters.horizonHour));
         params.set("min_confidence", String(filters.minConfidence));
         if (filters.debrisClass !== "all") {
@@ -252,21 +288,27 @@ export function App() {
         setLoadingForecast(false);
       }
     })();
-  }, [filters.horizonHour, filters.debrisClass, filters.minConfidence]);
+  }, [filters.horizonHour, filters.debrisClass, filters.minConfidence, selectedRegionId]);
 
   async function handleRunForecast() {
+    if (!selectedRegionId) {
+      return;
+    }
     setLoadingForecast(true);
     setError(null);
+    setActionMessage("");
     try {
       await requestJson("/forecast/run", {
         method: "POST",
         body: JSON.stringify({
-          horizon_hours: filters.horizonHour,
+          region_id: selectedRegionId,
+          horizon_hours: 72,
           debris_classes: ["low", "high"],
           source_mode: "auto",
         }),
       });
       const params = new URLSearchParams();
+      params.set("region_id", selectedRegionId);
       params.set("horizon_hour", String(filters.horizonHour));
       params.set("min_confidence", String(filters.minConfidence));
       if (filters.debrisClass !== "all") {
@@ -274,7 +316,13 @@ export function App() {
       }
       const snapshot = await requestJson<ForecastSnapshot>(`/forecast/latest?${params.toString()}`);
       setForecast(snapshot);
+      setRoute(null);
       setForecastMissing(false);
+      setActionMessage(
+        `Forecast refreshed for ${snapshot.region.name} at ${formatTimestamp(snapshot.generated_at)} using ${modelLabel(
+          snapshot.provenance,
+        )}.`,
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to run forecast.");
     } finally {
@@ -283,12 +331,17 @@ export function App() {
   }
 
   async function handleOptimizeRoute() {
+    if (!selectedRegionId) {
+      return;
+    }
     setLoadingRoute(true);
     setError(null);
+    setActionMessage("");
     try {
       const nextRoute = await requestJson<RoutePlan>("/route/optimize", {
         method: "POST",
         body: JSON.stringify({
+          region_id: selectedRegionId,
           depot_lat: routeForm.depotLat,
           depot_lon: routeForm.depotLon,
           mission_hours: routeForm.missionHours,
@@ -300,6 +353,11 @@ export function App() {
       });
       setRoute(nextRoute);
       setFeedbackMessage("");
+      setActionMessage(
+        nextRoute.recommended_mode === "collection"
+          ? `Collection route created with ${nextRoute.ordered_cell_ids.length} stop(s).`
+          : `Recon plan returned. No collection route cleared the objective threshold.`,
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to optimize route.");
     } finally {
@@ -364,6 +422,10 @@ export function App() {
   const routePolyline = buildRoutePolyline(route, forecast, routeForm);
   const activeProvenance = forecast?.provenance ?? null;
   const routeProvenance = route?.forecast_provenance ?? null;
+  const selectedRegion = regions.find((region) => region.id === selectedRegionId) ?? forecast?.region ?? null;
+  const mapCenter: [number, number] = selectedRegion
+    ? [selectedRegion.default_depot_lat, selectedRegion.default_depot_lon]
+    : DEFAULT_CENTER;
 
   return (
     <div className="app-shell">
@@ -390,7 +452,7 @@ export function App() {
       <section className="summary-strip">
         <article className="summary-card">
           <span className="summary-label">Pilot region</span>
-          <strong>{forecast?.region.name ?? health?.pilot_region ?? "sf_bay_estuary"}</strong>
+          <strong>{selectedRegion?.name ?? health?.pilot_region ?? "sf_bay_estuary"}</strong>
           <p>{loadingHealth ? "Checking backend status..." : "Active regional forecast workspace."}</p>
         </article>
         <article className="summary-card">
@@ -422,6 +484,7 @@ export function App() {
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
+      {actionMessage ? <div className="success-banner">{actionMessage}</div> : null}
 
       <main className="dashboard-grid">
         <section className="panel panel-map">
@@ -431,6 +494,20 @@ export function App() {
               <p>Confidence-aware hotspots for the selected forecast horizon.</p>
             </div>
             <div className="filter-row">
+              <label>
+                Area
+                <select
+                  aria-label="Region selector"
+                  value={selectedRegionId ?? ""}
+                  onChange={(event) => setSelectedRegionId(event.target.value)}
+                >
+                  {regions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {region.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label>
                 Horizon
                 <select
@@ -502,7 +579,7 @@ export function App() {
             <span className="legend-chip legend-low">Recon only</span>
           </div>
           <div className="map-frame">
-            <MapContainer center={DEFAULT_CENTER} zoom={10} scrollWheelZoom className="leaflet-map">
+            <MapContainer key={`${selectedRegionId ?? "default"}-${forecast?.run_id ?? "no-forecast"}`} center={mapCenter} zoom={10} scrollWheelZoom className="leaflet-map">
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

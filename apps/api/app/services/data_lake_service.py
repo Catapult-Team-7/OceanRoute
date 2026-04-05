@@ -293,28 +293,29 @@ def write_baseline_tensors(
 def write_baseline_manifest(artifact: BaselineArtifact) -> BaselineArtifact:
     year, month = _month_bucket(artifact.generated_at)
     manifest_path = _safe_path("manifests", "baseline", artifact.region_id, year, month, f"{artifact.artifact_id}.json")
-    manifest_uri = _write_json(manifest_path, artifact.model_dump(mode="json"))
+    payload = artifact.model_dump(mode="json")
+    manifest_uri = _write_json(manifest_path, payload)
     parquet_row = {
-        "artifact_id": artifact.artifact_id,
-        "region_id": artifact.region_id,
-        "run_id": artifact.run_id,
-        "debris_class": artifact.debris_class,
-        "generated_at": artifact.generated_at.isoformat(),
-        "forecast_valid_at": artifact.forecast_valid_at.isoformat(),
-        "horizon_hour": artifact.horizon_hour,
-        "baseline_engine": artifact.baseline_engine,
-        "source_mode_used": artifact.source_mode_used,
+        "artifact_id": payload["artifact_id"],
+        "region_id": payload["region_id"],
+        "run_id": payload["run_id"],
+        "debris_class": payload["debris_class"],
+        "generated_at": payload["generated_at"],
+        "forecast_valid_at": payload["forecast_valid_at"],
+        "horizon_hour": payload["horizon_hour"],
+        "baseline_engine": payload["baseline_engine"],
+        "source_mode_used": payload["source_mode_used"],
         "manifest_uri": manifest_uri,
-        "density_uri": artifact.density_uri,
-        "current_u_uri": artifact.current_u_uri,
-        "current_v_uri": artifact.current_v_uri,
-        "wind_u_uri": artifact.wind_u_uri,
-        "wind_v_uri": artifact.wind_v_uri,
-        "ensemble_spread_uri": artifact.ensemble_spread_uri,
-        "beaching_fraction_uri": artifact.beaching_fraction_uri,
-        "stokes_u_uri": artifact.stokes_u_uri,
-        "stokes_v_uri": artifact.stokes_v_uri,
-        "stokes_magnitude_uri": artifact.stokes_magnitude_uri,
+        "density_uri": payload["density_uri"],
+        "current_u_uri": payload["current_u_uri"],
+        "current_v_uri": payload["current_v_uri"],
+        "wind_u_uri": payload["wind_u_uri"],
+        "wind_v_uri": payload["wind_v_uri"],
+        "ensemble_spread_uri": payload["ensemble_spread_uri"],
+        "beaching_fraction_uri": payload["beaching_fraction_uri"],
+        "stokes_u_uri": payload["stokes_u_uri"],
+        "stokes_v_uri": payload["stokes_v_uri"],
+        "stokes_magnitude_uri": payload["stokes_magnitude_uri"],
     }
     parquet_index_uri = append_monthly_index("baseline", artifact.generated_at, artifact.region_id, parquet_row)
     return artifact.model_copy(update={"manifest_uri": manifest_uri, "parquet_index_uri": parquet_index_uri})
@@ -330,31 +331,32 @@ def write_baseline_manifests(artifacts: list[BaselineArtifact]) -> list[Baseline
     for artifact in artifacts:
         year, month = _month_bucket(artifact.generated_at)
         manifest_path = _safe_path("manifests", "baseline", artifact.region_id, year, month, f"{artifact.artifact_id}.json")
-        manifest_uri = _write_json(manifest_path, artifact.model_dump(mode="json"))
+        payload = artifact.model_dump(mode="json")
+        manifest_uri = _write_json(manifest_path, payload)
         key = (artifact.region_id, year, month)
         grouped_paths[key] = _safe_path("indexes", "baseline", artifact.region_id, year, f"{month}.parquet")
         grouped_rows.setdefault(key, []).append(
             {
-                "artifact_id": artifact.artifact_id,
-                "region_id": artifact.region_id,
-                "run_id": artifact.run_id,
-                "debris_class": artifact.debris_class,
-                "generated_at": artifact.generated_at.isoformat(),
-                "forecast_valid_at": artifact.forecast_valid_at.isoformat(),
-                "horizon_hour": artifact.horizon_hour,
-                "baseline_engine": artifact.baseline_engine,
-                "source_mode_used": artifact.source_mode_used,
+                "artifact_id": payload["artifact_id"],
+                "region_id": payload["region_id"],
+                "run_id": payload["run_id"],
+                "debris_class": payload["debris_class"],
+                "generated_at": payload["generated_at"],
+                "forecast_valid_at": payload["forecast_valid_at"],
+                "horizon_hour": payload["horizon_hour"],
+                "baseline_engine": payload["baseline_engine"],
+                "source_mode_used": payload["source_mode_used"],
                 "manifest_uri": manifest_uri,
-                "density_uri": artifact.density_uri,
-                "current_u_uri": artifact.current_u_uri,
-                "current_v_uri": artifact.current_v_uri,
-                "wind_u_uri": artifact.wind_u_uri,
-                "wind_v_uri": artifact.wind_v_uri,
-                "ensemble_spread_uri": artifact.ensemble_spread_uri,
-                "beaching_fraction_uri": artifact.beaching_fraction_uri,
-                "stokes_u_uri": artifact.stokes_u_uri,
-                "stokes_v_uri": artifact.stokes_v_uri,
-                "stokes_magnitude_uri": artifact.stokes_magnitude_uri,
+                "density_uri": payload["density_uri"],
+                "current_u_uri": payload["current_u_uri"],
+                "current_v_uri": payload["current_v_uri"],
+                "wind_u_uri": payload["wind_u_uri"],
+                "wind_v_uri": payload["wind_v_uri"],
+                "ensemble_spread_uri": payload["ensemble_spread_uri"],
+                "beaching_fraction_uri": payload["beaching_fraction_uri"],
+                "stokes_u_uri": payload["stokes_u_uri"],
+                "stokes_v_uri": payload["stokes_v_uri"],
+                "stokes_magnitude_uri": payload["stokes_magnitude_uri"],
             }
         )
         updated_artifacts[artifact.artifact_id] = artifact.model_copy(update={"manifest_uri": manifest_uri})

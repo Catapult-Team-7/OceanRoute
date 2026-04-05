@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta, timezone
 from math import ceil
 from time import perf_counter
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import BaselineArtifactModel, ForecastRunModel
 from app.schemas import (
+    BaselineArtifact,
     DriftBaselineInput,
     ForecastRunRequest,
     HistoricalBackfillRequest,
@@ -17,7 +19,7 @@ from app.schemas import (
     HistoricalBackfillTiming,
 )
 from app.services.baseline_runtime_service import baseline_artifact_to_model, build_baseline_artifact, run_baseline_diagnostics
-from app.services.data_lake_service import write_baseline_manifests
+from app.services.data_lake_service import write_baseline_manifests, write_static_masks
 from app.services.forecast_service import run_forecast
 from app.services.ingest_service import load_operational_context
 from app.services.region_service import REGIONS
@@ -71,7 +73,7 @@ def _resolve_baseline_fidelity(request: HistoricalBackfillRequest) -> tuple[int,
 def _minimal_summary(
     *,
     mode: str,
-    context,
+    frame_count: int,
     baseline_engine: str | None,
     baseline_artifact_uri: str | None,
     baseline_artifact_count: int,
@@ -80,7 +82,7 @@ def _minimal_summary(
         "historical_mode": mode,
         "baseline_only": True,
         "step_count": 0,
-        "frame_count": len(context.frames),
+        "frame_count": frame_count,
         "baseline_artifact_count": baseline_artifact_count,
     }
     if baseline_engine:
@@ -90,24 +92,57 @@ def _minimal_summary(
     return summary
 
 
-def _run_dataset_only_chunk(
+def _run_payload(
     *,
+    request: HistoricalBackfillRequest,
+    run_id: str,
+    context,
+    baseline_engine: str | None,
+    baseline_artifact_count: int,
+) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "generated_at": context.generated_at.isoformat(),
+        "horizon_hours": 72,
+        "pilot_region": context.pilot_region,
+        "source_mode_requested": context.source_mode_requested,
+        "source_mode_used": context.source_mode_used,
+        "is_fallback": context.is_fallback,
+        "source_notes": list(context.source_notes),
+        "frame_count": len(context.frames),
+        "baseline_engine": baseline_engine,
+        "baseline_artifact_count": baseline_artifact_count,
+        "mode": request.mode,
+    }
+
+
+def _prewarm_static_masks(region_id: str, timestamps: list[datetime]) -> None:
+    months = {
+        timestamp.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        for timestamp in timestamps
+    }
+    for timestamp in sorted(months):
+        write_static_masks(region_id, timestamp=timestamp)
+
+
+def _build_dataset_only_chunk_payload(
     chunk_index: int,
     region_id: str,
-    request: HistoricalBackfillRequest,
-    timestamps: list[datetime],
-    db: Session,
-) -> HistoricalBackfillTiming:
+    request_payload: dict[str, object],
+    timestamps_raw: list[str],
+) -> dict[str, object]:
+    request = HistoricalBackfillRequest.model_validate(request_payload)
+    timestamps = [datetime.fromisoformat(value) for value in timestamps_raw]
     ensemble_members, particles_per_member = _resolve_baseline_fidelity(request)
     setup_started = perf_counter()
+    _prewarm_static_masks(region_id, timestamps)
     setup_ms = (perf_counter() - setup_started) * 1000
     source_load_ms = 0.0
     baseline_ms = 0.0
     artifact_write_ms = 0.0
-    db_write_ms = 0.0
     total_started = perf_counter()
-    forecast_rows: list[ForecastRunModel] = []
-    baseline_artifacts = []
+    run_payloads: list[dict[str, object]] = []
+    artifact_payloads: list[dict[str, object]] = []
 
     for index, generated_at in enumerate(timestamps):
         source_started = perf_counter()
@@ -121,7 +156,7 @@ def _run_dataset_only_chunk(
         source_load_ms += (perf_counter() - source_started) * 1000
         run_id = str(uuid4())
         selected_baseline_engine: str | None = None
-        run_artifacts = []
+        run_artifacts: list[BaselineArtifact] = []
 
         for frame in context.frames:
             currents_u = {point.cell_id: point.current_u for point in frame.grid}
@@ -171,27 +206,81 @@ def _run_dataset_only_chunk(
                 )
                 artifact_write_ms += (perf_counter() - artifact_started) * 1000
 
-        manifest_started = perf_counter()
-        finalized_artifacts = write_baseline_manifests(run_artifacts)
-        artifact_write_ms += (perf_counter() - manifest_started) * 1000
-        baseline_artifacts.extend(finalized_artifacts)
-        baseline_artifact_uri = finalized_artifacts[0].manifest_uri if finalized_artifacts else None
+        run_payloads.append(
+            _run_payload(
+                request=request,
+                run_id=run_id,
+                context=context,
+                baseline_engine=selected_baseline_engine,
+                baseline_artifact_count=len(run_artifacts),
+            )
+        )
+        artifact_payloads.extend(artifact.model_dump(mode="json") for artifact in run_artifacts)
+
+    return {
+        "chunk_index": chunk_index,
+        "timing": {
+            "region_id": region_id,
+            "chunk_index": chunk_index,
+            "max_workers": request.max_workers,
+            "timestamps_in_chunk": len(timestamps),
+            "runs_created": len(run_payloads),
+            "baseline_artifacts_created": len(artifact_payloads),
+            "setup_ms": round(setup_ms, 3),
+            "source_load_ms": round(source_load_ms, 3),
+            "baseline_ms": round(baseline_ms, 3),
+            "artifact_write_ms": round(artifact_write_ms, 3),
+            "db_write_ms": 0.0,
+            "parallel_overhead_ms": 0.0,
+            "total_ms": round((perf_counter() - total_started) * 1000, 3),
+        },
+        "run_payloads": run_payloads,
+        "artifact_payloads": artifact_payloads,
+    }
+
+
+def _finalize_dataset_only_chunk_payload(
+    *,
+    payload: dict[str, object],
+    db: Session,
+) -> HistoricalBackfillTiming:
+    timing_payload = dict(payload["timing"])
+    run_payloads = list(payload["run_payloads"])
+    raw_artifacts = list(payload["artifact_payloads"])
+    artifact_write_ms = float(timing_payload["artifact_write_ms"])
+    db_write_ms = 0.0
+    total_started = perf_counter()
+
+    manifest_started = perf_counter()
+    artifacts = [BaselineArtifact.model_validate(item) for item in raw_artifacts]
+    finalized_artifacts = write_baseline_manifests(artifacts)
+    artifact_write_ms += (perf_counter() - manifest_started) * 1000
+
+    artifacts_by_run: dict[str, list[BaselineArtifact]] = {}
+    for artifact in finalized_artifacts:
+        artifacts_by_run.setdefault(artifact.run_id, []).append(artifact)
+
+    forecast_rows: list[ForecastRunModel] = []
+    for run_payload in run_payloads:
+        run_id = str(run_payload["id"])
+        run_artifacts = artifacts_by_run.get(run_id, [])
+        baseline_artifact_uri = run_artifacts[0].manifest_uri if run_artifacts else None
         forecast_rows.append(
             ForecastRunModel(
                 id=run_id,
-                generated_at=context.generated_at,
-                horizon_hours=72,
-                pilot_region=context.pilot_region,
-                source_mode_requested=context.source_mode_requested,
-                source_mode_used=context.source_mode_used,
-                is_fallback=context.is_fallback,
-                source_notes=context.source_notes,
+                generated_at=datetime.fromisoformat(str(run_payload["generated_at"])),
+                horizon_hours=int(run_payload["horizon_hours"]),
+                pilot_region=str(run_payload["pilot_region"]),
+                source_mode_requested=str(run_payload["source_mode_requested"]),
+                source_mode_used=str(run_payload["source_mode_used"]),
+                is_fallback=bool(run_payload["is_fallback"]),
+                source_notes=list(run_payload["source_notes"]),
                 summary=_minimal_summary(
-                    mode=request.mode,
-                    context=context,
-                    baseline_engine=selected_baseline_engine,
+                    mode=str(run_payload["mode"]),
+                    frame_count=int(run_payload["frame_count"]),
+                    baseline_engine=str(run_payload["baseline_engine"]) if run_payload["baseline_engine"] else None,
                     baseline_artifact_uri=baseline_artifact_uri,
-                    baseline_artifact_count=len(finalized_artifacts),
+                    baseline_artifact_count=len(run_artifacts),
                 ),
             )
         )
@@ -199,24 +288,43 @@ def _run_dataset_only_chunk(
     db_started = perf_counter()
     if forecast_rows:
         db.add_all(forecast_rows)
-    if baseline_artifacts:
-        db.add_all([baseline_artifact_to_model(artifact) for artifact in baseline_artifacts])
+    if finalized_artifacts:
+        db.add_all([baseline_artifact_to_model(artifact) for artifact in finalized_artifacts])
     db.commit()
     db_write_ms = (perf_counter() - db_started) * 1000
 
     return HistoricalBackfillTiming(
-        region_id=region_id,
-        chunk_index=chunk_index,
-        timestamps_in_chunk=len(timestamps),
+        region_id=str(timing_payload["region_id"]),
+        chunk_index=int(timing_payload["chunk_index"]),
+        max_workers=int(timing_payload["max_workers"]) if timing_payload["max_workers"] else None,
+        timestamps_in_chunk=int(timing_payload["timestamps_in_chunk"]),
         runs_created=len(forecast_rows),
-        baseline_artifacts_created=len(baseline_artifacts),
-        setup_ms=round(setup_ms, 3),
-        source_load_ms=round(source_load_ms, 3),
-        baseline_ms=round(baseline_ms, 3),
+        baseline_artifacts_created=len(finalized_artifacts),
+        setup_ms=float(timing_payload["setup_ms"]),
+        source_load_ms=float(timing_payload["source_load_ms"]),
+        baseline_ms=float(timing_payload["baseline_ms"]),
         artifact_write_ms=round(artifact_write_ms, 3),
         db_write_ms=round(db_write_ms, 3),
-        total_ms=round((perf_counter() - total_started) * 1000, 3),
+        parallel_overhead_ms=float(timing_payload.get("parallel_overhead_ms", 0.0)),
+        total_ms=round((perf_counter() - total_started) * 1000 + float(timing_payload["total_ms"]), 3),
     )
+
+
+def _run_dataset_only_chunk(
+    *,
+    chunk_index: int,
+    region_id: str,
+    request: HistoricalBackfillRequest,
+    timestamps: list[datetime],
+    db: Session,
+) -> HistoricalBackfillTiming:
+    payload = _build_dataset_only_chunk_payload(
+        chunk_index,
+        region_id,
+        request.model_dump(mode="json"),
+        [timestamp.isoformat() for timestamp in timestamps],
+    )
+    return _finalize_dataset_only_chunk_payload(payload=payload, db=db)
 
 
 def _run_live_parity_chunk(
@@ -248,6 +356,7 @@ def _run_live_parity_chunk(
     return HistoricalBackfillTiming(
         region_id=region_id,
         chunk_index=chunk_index,
+        max_workers=None,
         timestamps_in_chunk=len(timestamps),
         runs_created=runs_created,
         baseline_artifacts_created=int(artifact_count_after - artifact_count_before),
@@ -256,6 +365,7 @@ def _run_live_parity_chunk(
         baseline_ms=0.0,
         artifact_write_ms=0.0,
         db_write_ms=0.0,
+        parallel_overhead_ms=0.0,
         total_ms=round((perf_counter() - total_started) * 1000, 3),
     )
 
@@ -280,17 +390,52 @@ def run_historical_backfill(request: HistoricalBackfillRequest, db: Session) -> 
             if generated_at.replace(minute=0, second=0, microsecond=0) not in existing
         ]
         timestamps_planned += len(planned_dates)
-        for chunk_index, chunk in enumerate(_chunk_dates(planned_dates, request.chunk_days), start=1):
-            if not chunk:
-                continue
-            if request.mode == "live_parity":
-                timing = _run_live_parity_chunk(chunk_index=chunk_index, region_id=region_id, request=request, timestamps=chunk, db=db)
-            else:
-                timing = _run_dataset_only_chunk(chunk_index=chunk_index, region_id=region_id, request=request, timestamps=chunk, db=db)
-            timings.append(timing)
-            runs_created += timing.runs_created
-            timestamps_processed += timing.runs_created
-            existing.update(chunk)
+        chunks = _chunk_dates(planned_dates, request.chunk_days)
+        if request.mode == "dataset_only" and request.max_workers and request.max_workers > 1 and len(chunks) > 1:
+            _prewarm_static_masks(region_id, planned_dates)
+            request_payload = request.model_dump(mode="json")
+            with ProcessPoolExecutor(max_workers=request.max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _build_dataset_only_chunk_payload,
+                        chunk_index,
+                        region_id,
+                        request_payload,
+                        [timestamp.isoformat() for timestamp in chunk],
+                    )
+                    for chunk_index, chunk in enumerate(chunks, start=1)
+                    if chunk
+                ]
+                chunk_payloads = [future.result() for future in futures]
+            for payload in sorted(chunk_payloads, key=lambda item: int(item["chunk_index"])):
+                timing = _finalize_dataset_only_chunk_payload(payload=payload, db=db)
+                timings.append(timing)
+                runs_created += timing.runs_created
+                timestamps_processed += timing.runs_created
+        else:
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                if not chunk:
+                    continue
+                if request.mode == "live_parity":
+                    timing = _run_live_parity_chunk(
+                        chunk_index=chunk_index,
+                        region_id=region_id,
+                        request=request,
+                        timestamps=chunk,
+                        db=db,
+                    )
+                else:
+                    timing = _run_dataset_only_chunk(
+                        chunk_index=chunk_index,
+                        region_id=region_id,
+                        request=request,
+                        timestamps=chunk,
+                        db=db,
+                    )
+                timings.append(timing)
+                runs_created += timing.runs_created
+                timestamps_processed += timing.runs_created
+                existing.update(chunk)
 
     artifact_count_after = db.execute(select(func.count(BaselineArtifactModel.artifact_id))).scalar_one()
     ready_run_count = db.execute(
@@ -301,6 +446,7 @@ def run_historical_backfill(request: HistoricalBackfillRequest, db: Session) -> 
         source_mode=request.source_mode,
         days_backfilled=request.days,
         mode=request.mode,
+        max_workers=request.max_workers,
         runs_created=runs_created,
         baseline_artifacts_created=int(artifact_count_after - artifact_count_before),
         dataset_ready_run_count=int(ready_run_count),

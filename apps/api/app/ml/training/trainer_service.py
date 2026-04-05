@@ -189,17 +189,19 @@ def _evaluate_model(module, datamodule: OceanRouteDataModule, horizons: list[int
     targets_kg: list[np.ndarray] = []
     targets_uncertainty: list[np.ndarray] = []
     baseline_density: list[np.ndarray] = []
+    device = next(module.parameters()).device
     module.eval()
     with torch.no_grad():
         for batch in test_loader:
-            pred_probability, pred_expected_kg, pred_uncertainty = module(batch["inputs"])
+            inputs = batch["inputs"].to(device, non_blocking=True)
+            pred_probability, pred_expected_kg, pred_uncertainty = module(inputs)
             probabilities.append(pred_probability.detach().cpu().numpy())
             kilograms.append(pred_expected_kg.detach().cpu().numpy())
             uncertainties.append(pred_uncertainty.detach().cpu().numpy())
             targets_probability.append(batch["target_probability"].detach().cpu().numpy())
             targets_kg.append(batch["target_expected_kg"].detach().cpu().numpy())
             targets_uncertainty.append(batch["target_uncertainty"].detach().cpu().numpy())
-            baseline_density.append(batch["inputs"][:, -1, 4:5].detach().cpu().numpy())
+            baseline_density.append(inputs[:, -1, 4:5].detach().cpu().numpy())
     return compute_eval_metrics(
         probabilities=np.concatenate(probabilities, axis=0),
         predicted_kg=np.concatenate(kilograms, axis=0),
@@ -223,6 +225,10 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
     run_dir = training_runs_root() / config.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = run_dir / "stdout.log"
+    cuda_available = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
+    use_cuda = config.device.lower() == "cuda" or (config.device.lower() == "auto" and cuda_available)
+    if use_cuda:
+        torch.set_float32_matmul_precision("high")
 
     datamodule = OceanRouteDataModule(
         bundle,
@@ -230,6 +236,9 @@ def train_sequence_model(config: TrainingConfig, dataset_root: Path) -> dict[str
         region_ids=list(config.region_ids) or None,
         horizons=list(config.horizons) or None,
         batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        prefetch_factor=config.prefetch_factor,
+        pin_memory=use_cuda,
     )
     datamodule.setup()
     callbacks, checkpoint_callback, history_callback = build_callbacks(run_dir)
