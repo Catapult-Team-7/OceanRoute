@@ -7,11 +7,16 @@ function distanceScore(latA, lonA, latB, lonB) {
   return Math.hypot((latA - latB) / 8, lonDelta / 10);
 }
 
+function distanceDeg(latA, lonA, latB, lonB) {
+  const lonDelta = normalizeLon(lonA - lonB);
+  return Math.hypot(latA - latB, lonDelta);
+}
+
 function clusterDistanceForZoom(zoom) {
-  if (zoom < 1.4) return 12;
-  if (zoom < 2.1) return 8;
-  if (zoom < 3) return 5;
-  return 3;
+  if (zoom < 1.4) return 10;
+  if (zoom < 2.1) return 6;
+  if (zoom < 3) return 3.5;
+  return 2;
 }
 
 function clusterWindowForZoom(zoom) {
@@ -120,13 +125,14 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
       )) {
       const weight = Math.max(0.15, (item.metadata?.source_count || 1) * (item.intensity || 1));
       const existing = clusters.find(
-        (cluster) => distanceScore(item.lat, item.lon, cluster.lat, cluster.lon) <= clusterDistance
+        (cluster) => distanceDeg(item.lat, item.lon, cluster.lat, cluster.lon) <= clusterDistance
       );
       if (existing) {
-        existing.weight += weight;
-        existing.lat = (existing.lat * existing.weightBefore + item.lat * weight) / (existing.weightBefore + weight);
-        existing.lon = normalizeLon((existing.lon * existing.weightBefore + item.lon * weight) / (existing.weightBefore + weight));
-        existing.weightBefore += weight;
+        const previousWeight = existing.weight;
+        const nextWeight = previousWeight + weight;
+        existing.lat = (existing.lat * previousWeight + item.lat * weight) / nextWeight;
+        existing.lon = normalizeLon((existing.lon * previousWeight + item.lon * weight) / nextWeight);
+        existing.weight = nextWeight;
         existing.clusterSize += item.metadata?.source_count || 1;
         existing.intensity = Math.max(existing.intensity, item.intensity || 0);
         existing.routePriority = Math.max(existing.routePriority, item.metadata?.route_priority || item.intensity || 0);
@@ -163,7 +169,6 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
           source: item.source,
           metadata: item.metadata || {},
           weight,
-          weightBefore: weight,
         });
       }
     }

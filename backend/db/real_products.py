@@ -95,6 +95,56 @@ def _smooth_spatial_grid(values: np.ndarray, support_mask: np.ndarray | None = N
     return smoothed
 
 
+def _normalized_score_grid(values: np.ndarray, support_mask: np.ndarray, floor: float) -> np.ndarray:
+    supported = np.asarray(values, dtype=np.float32)[support_mask]
+    if supported.size == 0:
+        return np.zeros_like(values, dtype=np.float32)
+    scale = max(float(np.nanstd(supported)), floor)
+    return np.asarray(values, dtype=np.float32) / scale
+
+
+def _current_convergence_grid(current_u: np.ndarray, current_v: np.ndarray, support_mask: np.ndarray) -> np.ndarray:
+    du_dy, du_dx = np.gradient(np.asarray(current_u, dtype=np.float32))
+    dv_dy, dv_dx = np.gradient(np.asarray(current_v, dtype=np.float32))
+    divergence = du_dx + dv_dy
+    convergence = np.maximum(0.0, -divergence)
+    convergence = _smooth_spatial_grid(convergence, support_mask, passes=2)
+    return _normalized_score_grid(convergence, support_mask, floor=0.04)
+
+
+def _local_peak_mask(
+    values: np.ndarray,
+    support_mask: np.ndarray,
+    *,
+    min_value: float,
+    min_prominence: float,
+    neighborhood: int = 1,
+) -> np.ndarray:
+    rows, cols = values.shape
+    peaks = np.zeros_like(values, dtype=bool)
+    for i in range(rows):
+        for j in range(cols):
+            if not support_mask[i, j]:
+                continue
+            center = float(values[i, j])
+            if center < min_value:
+                continue
+            i0 = max(0, i - neighborhood)
+            i1 = min(rows, i + neighborhood + 1)
+            j0 = max(0, j - neighborhood)
+            j1 = min(cols, j + neighborhood + 1)
+            window_values = values[i0:i1, j0:j1]
+            window_support = support_mask[i0:i1, j0:j1]
+            supported_window = window_values[window_support]
+            if supported_window.size == 0:
+                continue
+            local_max = float(np.nanmax(supported_window))
+            local_mean = float(np.nanmean(supported_window))
+            if center >= local_max - 1e-6 and center >= local_mean + min_prominence:
+                peaks[i, j] = True
+    return peaks
+
+
 def _select_spaced_anomalies(
     candidates: list[AnomalyRecord],
     *,
@@ -453,6 +503,38 @@ def build_provisional_real_grid_bundle(
     predicted_std = float(np.nanstd(supported_predictions))
     deviation_scale = max(predicted_std, 0.2)
     gradient_scale = max(float(np.nanstd(supported_gradients)), 0.08)
+    current_u_grid = feature_grid[2] * 3.0
+    current_v_grid = feature_grid[3] * 3.0
+    current_speed_grid = np.sqrt((current_u_grid**2) + (current_v_grid**2))
+    convergence_grid = _current_convergence_grid(current_u_grid, current_v_grid, support_mask)
+    deviation_grid = np.abs(predicted_grid - predicted_mean) / deviation_scale
+    gradient_norm_grid = gradient_grid / gradient_scale
+    route_signal_grid = (
+        deviation_grid * 0.35
+        + gradient_norm_grid * 0.28
+        + convergence_grid * 0.9
+        + np.clip(current_speed_grid / 2.5, 0.0, 2.0) * 0.18
+    )
+    anomaly_signal_grid = (
+        deviation_grid * 0.22
+        + gradient_norm_grid * 0.26
+        + convergence_grid * 0.42
+        + np.clip(current_speed_grid / 3.0, 0.0, 1.5) * 0.08
+    )
+    route_peak_mask = _local_peak_mask(
+        route_signal_grid,
+        support_mask,
+        min_value=0.95 if region == "global" else 0.7,
+        min_prominence=0.16 if region == "global" else 0.12,
+        neighborhood=1 if region == "global" else 2,
+    )
+    anomaly_peak_mask = _local_peak_mask(
+        anomaly_signal_grid,
+        support_mask,
+        min_value=0.85 if region == "global" else 0.65,
+        min_prominence=0.14 if region == "global" else 0.1,
+        neighborhood=1 if region == "global" else 2,
+    )
     rows: list[FluxPoint] = []
     anomaly_candidates: list[AnomalyRecord] = []
     for i, lat in enumerate(lat_values):
@@ -462,22 +544,43 @@ def build_provisional_real_grid_bundle(
             if not support_mask[i, j]:
                 continue
             predicted_flux = float(predicted_grid[i, j])
-            model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
-            gradient_strength = float(gradient_grid[i, j]) / gradient_scale
-            current_u = float(feature_grid[2, i, j] * 3.0)
-            current_v = float(feature_grid[3, i, j] * 3.0)
-            current_speed = math.sqrt((current_u**2) + (current_v**2))
+            model_deviation = float(deviation_grid[i, j])
+            gradient_strength = float(gradient_norm_grid[i, j])
+            current_u = float(current_u_grid[i, j])
+            current_v = float(current_v_grid[i, j])
+            current_speed = float(current_speed_grid[i, j])
+            convergence_score = float(convergence_grid[i, j])
             latitude_weight = _operational_latitude_weight(float(lat))
-            weakening = max(0.0, ((model_deviation * 0.22) + (gradient_strength * 0.28)) * latitude_weight)
-            route_priority = max(
+            weakening = max(
                 0.0,
-                (model_deviation * 0.55 + gradient_strength * 0.45 + current_speed * 0.22 + (wind_default / 32.0))
+                ((model_deviation * 0.16) + (gradient_strength * 0.18) + (convergence_score * 0.42))
                 * latitude_weight,
             )
+            route_priority = max(
+                0.0,
+                (
+                    model_deviation * 0.24
+                    + gradient_strength * 0.18
+                    + convergence_score * 0.85
+                    + current_speed * 0.14
+                    + (wind_default / 36.0)
+                )
+                * latitude_weight,
+            )
+            if not route_peak_mask[i, j]:
+                route_priority *= 0.16
             anomaly_score = min(
                 1.0,
-                (model_deviation * 0.32 + gradient_strength * 0.46 + current_speed * 0.03) * latitude_weight,
+                (
+                    model_deviation * 0.12
+                    + gradient_strength * 0.15
+                    + convergence_score * 0.62
+                    + current_speed * 0.02
+                )
+                * latitude_weight,
             )
+            if not anomaly_peak_mask[i, j]:
+                anomaly_score *= 0.2
             deviation_pct = round((model_deviation * 35.0 + gradient_strength * 45.0) * latitude_weight, 1)
             rows.append(
                 FluxPoint(
@@ -500,7 +603,7 @@ def build_provisional_real_grid_bundle(
                     source="MODEL",
                 )
             )
-            if anomaly_score >= 0.22 and deviation_pct >= 6.0:
+            if abs(float(lat)) <= 52 and anomaly_peak_mask[i, j] and anomaly_score >= 0.24 and deviation_pct >= 7.0:
                 anomaly_candidates.append(
                     AnomalyRecord(
                         id=f"provisional-{target_month[0]}-{target_month[1]}-{i}-{j}",
@@ -614,6 +717,49 @@ def build_real_grid_bundle(
     era_wind = _scalar_month_value(era_monthly, target_month[0], target_month[1], "era5_wind_speed", default=0.0)
     observed_flux = _build_observed_flux_grid(socat_url, atmospheric, target_month, resolution, era_wind)
     target_features = monthly_features[target_month]
+    current_u_grid = target_features[2] * 3.0
+    current_v_grid = target_features[3] * 3.0
+    current_speed_grid = np.sqrt((current_u_grid**2) + (current_v_grid**2))
+    convergence_grid = _current_convergence_grid(current_u_grid, current_v_grid, support_mask)
+    deviation_grid = np.abs(predicted_grid - predicted_mean) / deviation_scale
+    gradient_norm_grid = gradient_grid / gradient_scale
+    observed_gap_grid = np.zeros_like(predicted_grid, dtype=np.float32)
+    for i, lat in enumerate(lat_values):
+        for j, lon in enumerate(lon_values):
+            if not support_mask[i, j]:
+                continue
+            cell_key = (round(float(lat), 6), round(float(lon), 6))
+            observed_value = observed_flux.get(cell_key)
+            if observed_value is not None:
+                observed_gap_grid[i, j] = abs(float(observed_value) - float(predicted_grid[i, j]))
+    route_signal_grid = (
+        observed_gap_grid * 0.65
+        + deviation_grid * 0.18
+        + gradient_norm_grid * 0.16
+        + convergence_grid * 0.72
+        + np.clip(current_speed_grid / 2.5, 0.0, 2.0) * 0.12
+    )
+    anomaly_signal_grid = (
+        observed_gap_grid * 0.45
+        + deviation_grid * 0.12
+        + gradient_norm_grid * 0.14
+        + convergence_grid * 0.58
+        + np.clip(current_speed_grid / 3.0, 0.0, 1.5) * 0.05
+    )
+    route_peak_mask = _local_peak_mask(
+        route_signal_grid,
+        support_mask,
+        min_value=0.8 if region == "global" else 0.65,
+        min_prominence=0.12 if region == "global" else 0.1,
+        neighborhood=1 if region == "global" else 2,
+    )
+    anomaly_peak_mask = _local_peak_mask(
+        anomaly_signal_grid,
+        support_mask,
+        min_value=0.55 if region == "global" else 0.45,
+        min_prominence=0.1 if region == "global" else 0.08,
+        neighborhood=1 if region == "global" else 2,
+    )
 
     rows: list[FluxPoint] = []
     anomaly_candidates: list[AnomalyRecord] = []
@@ -629,24 +775,42 @@ def build_real_grid_bundle(
             observed_value = observed_flux.get(cell_key, predicted_flux)
             if cell_key in observed_flux:
                 observed_support_cells += 1
-            observed_gap = abs(observed_value - predicted_flux) if cell_key in observed_flux else 0.0
-            model_deviation = abs(predicted_flux - predicted_mean) / deviation_scale
-            gradient_strength = float(gradient_grid[i, j]) / gradient_scale
+            observed_gap = float(observed_gap_grid[i, j])
+            model_deviation = float(deviation_grid[i, j])
+            gradient_strength = float(gradient_norm_grid[i, j])
             latitude_weight = _operational_latitude_weight(float(lat))
             weakening = max(observed_gap, model_deviation * 0.35) * latitude_weight
-            current_u = float(target_features[2, i, j] * 3.0)
-            current_v = float(target_features[3, i, j] * 3.0)
-            current_speed = math.sqrt((current_u**2) + (current_v**2))
+            current_u = float(current_u_grid[i, j])
+            current_v = float(current_v_grid[i, j])
+            current_speed = float(current_speed_grid[i, j])
+            convergence_score = float(convergence_grid[i, j])
             route_priority = max(
                 0.0,
-                (observed_gap * 1.1 + model_deviation * 0.45 + gradient_strength * 0.35 + current_speed * 0.2 + (era_wind / 32.0))
+                (
+                    observed_gap * 0.5
+                    + model_deviation * 0.12
+                    + gradient_strength * 0.1
+                    + convergence_score * 0.7
+                    + current_speed * 0.1
+                    + (era_wind / 40.0)
+                )
                 * latitude_weight,
             )
+            if not route_peak_mask[i, j]:
+                route_priority *= 0.14
             anomaly_score = min(
                 1.0,
-                (observed_gap * 0.4 + model_deviation * 0.2 + gradient_strength * 0.32 + current_speed * 0.04)
+                (
+                    observed_gap * 0.28
+                    + model_deviation * 0.08
+                    + gradient_strength * 0.1
+                    + convergence_score * 0.46
+                    + current_speed * 0.02
+                )
                 * latitude_weight,
             )
+            if not anomaly_peak_mask[i, j]:
+                anomaly_score *= 0.2
             deviation_pct = round(
                 (
                     (observed_gap / max(abs(predicted_flux), 0.25)) * 100.0
@@ -677,7 +841,7 @@ def build_real_grid_bundle(
                     source="MODEL",
                 )
             )
-            if anomaly_score >= 0.22 and deviation_pct >= 6.0:
+            if abs(float(lat)) <= 52 and anomaly_peak_mask[i, j] and anomaly_score >= 0.24 and deviation_pct >= 7.0:
                 anomaly_candidates.append(
                     AnomalyRecord(
                         id=f"real-{target_month[0]}-{target_month[1]}-{i}-{j}",

@@ -2,7 +2,6 @@ import { useEffect } from "react";
 
 import { API_BASE } from "../utils/constants";
 import { useOceanStore } from "../store/oceanStore";
-import { buildFallbackAnomalies } from "../utils/demoMissionData";
 import { fetchJson } from "../utils/fetchJson";
 
 export function useAnomalies() {
@@ -18,10 +17,6 @@ export function useAnomalies() {
     let cancelled = false;
     const controller = new AbortController();
 
-    if (!useOceanStore.getState().anomalies.length) {
-      setAnomalies(buildFallbackAnomalies(selectedDate, selectedRegion));
-    }
-
     async function load() {
       try {
         const params = new URLSearchParams({ date: selectedDate, threshold: "0.35", limit: "12" });
@@ -29,7 +24,11 @@ export function useAnomalies() {
           signal: controller.signal,
           timeoutMs: 7000,
         });
-        if (!cancelled) setAnomalies(data.anomalies || []);
+        if (!cancelled) {
+          setAnomalies(
+            (data.anomalies || []).filter((anomaly) => Math.abs(anomaly.lat) <= 55)
+          );
+        }
       } catch (error) {
         if (!cancelled && error.name !== "AbortError") {
           console.error("Failed to fetch anomalies", error);

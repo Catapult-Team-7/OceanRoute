@@ -76,6 +76,14 @@ export default function OceanMap() {
     () => buildDisplayTrashTargets(trashData?.hotspots || [], recoveryTargets, viewState.zoom),
     [trashData?.hotspots, recoveryTargets, viewState.zoom]
   );
+  const visibleAnomalies = useMemo(
+    () =>
+      [...anomalies]
+        .filter((anomaly) => Math.abs(anomaly.lat) <= 55)
+        .sort((a, b) => (b.anomaly_score || 0) - (a.anomaly_score || 0))
+        .slice(0, selectedRegion === "global" ? 8 : 12),
+    [anomalies, selectedRegion]
+  );
   const visibleTrashTargets = useMemo(
     () =>
       [...trashTargets]
@@ -84,8 +92,8 @@ export default function OceanMap() {
     [selectedRegion, trashTargets]
   );
   const prioritySummary = useMemo(
-    () => buildTopMissionTargets(points, anomalies, viewState.zoom, verifiedMap),
-    [anomalies, points, verifiedMap, viewState.zoom]
+    () => buildTopMissionTargets(points, visibleAnomalies, viewState.zoom, verifiedMap),
+    [points, verifiedMap, viewState.zoom, visibleAnomalies]
   );
 
   const routedTrashTargets = useMemo(
@@ -132,14 +140,14 @@ export default function OceanMap() {
     () => {
       const ranked = [...points]
         .filter((point) => point?.properties)
-        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 68)
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 55)
         .sort((a, b) => hotspotStrength(b) - hotspotStrength(a));
       return selectSpacedFeatures(
         ranked,
-        selectedRegion === "global" ? 12 : 6,
-        selectedRegion === "global" ? 32 : 42,
+        selectedRegion === "global" ? 16 : 8,
+        selectedRegion === "global" ? 20 : 28,
         (point) =>
-          hotspotStrength(point) >= (selectedRegion === "global" ? 1.1 : 0.75)
+          hotspotStrength(point) >= (selectedRegion === "global" ? 1.3 : 0.85)
       );
     },
     [points, selectedRegion]
@@ -148,13 +156,13 @@ export default function OceanMap() {
   const weakeningZones = useMemo(
     () => {
       const ranked = [...points]
-        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 68)
-        .filter((point) => (point.properties.weakening_score || 0) > 0.2)
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 55)
+        .filter((point) => (point.properties.weakening_score || 0) > 0.26)
         .sort((a, b) => (b.properties.weakening_score || 0) - (a.properties.weakening_score || 0));
       return selectSpacedFeatures(
         ranked,
-        selectedRegion === "global" ? 14 : 7,
-        selectedRegion === "global" ? 22 : 28
+        selectedRegion === "global" ? 18 : 8,
+        selectedRegion === "global" ? 12 : 18
       );
     },
     [points, selectedRegion]
@@ -241,7 +249,7 @@ export default function OceanMap() {
       }),
       new ScatterplotLayer({
         id: "anomalies",
-        data: anomalies,
+        data: visibleAnomalies,
         getPosition: (d) => [d.lon, d.lat],
         getRadius: (d) => 90000 + d.anomaly_score * 150000,
         radiusMinPixels: selectedRegion === "global" ? 10 : 12,
@@ -298,7 +306,7 @@ export default function OceanMap() {
       }
       return activeLayers;
     },
-    [anomalies, hotspotNodes, routeLabels, routeSegments, selectedRegion, verifiedMap, viewState.zoom, visibleTrashTargets, weakeningZones]
+    [hotspotNodes, routeLabels, routeSegments, selectedRegion, verifiedMap, viewState.zoom, visibleAnomalies, visibleTrashTargets, weakeningZones]
   );
 
   return (
@@ -352,7 +360,7 @@ export default function OceanMap() {
             co2Hotspots={hotspotNodes}
             trashTargets={visibleTrashTargets}
             routeSegments={routeSegments}
-            anomalies={anomalies}
+            anomalies={visibleAnomalies}
             resolution={gridResolution}
           />
         </Suspense>
