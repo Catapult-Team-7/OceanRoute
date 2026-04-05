@@ -5,7 +5,6 @@ from app.schemas import ResidualModelInput
 
 def apply_residual_correction(payload: ResidualModelInput) -> dict[str, float]:
     corrected: dict[str, float] = {}
-    horizon_penalty = max(0.0, payload.horizon_hour - 24) * 0.0025
     for cell_id, base in payload.baseline_density.items():
         current_u, current_v = payload.currents[cell_id]
         wind_u, wind_v = payload.winds[cell_id]
@@ -22,7 +21,6 @@ def apply_residual_correction(payload: ResidualModelInput) -> dict[str, float]:
             + (shoreline * 0.06)
             + (beaching * 0.18)
             - (spread * 0.12)
-            - horizon_penalty
         )
         corrected[cell_id] = max(0.0, round(base + residual, 4))
     return corrected

@@ -39,6 +39,23 @@ def _forecast_hours(max_horizon: int) -> list[int]:
     return hours
 
 
+def _format_hour_list(hours: list[int]) -> str:
+    if not hours:
+        return "none"
+    ordered = sorted(set(hours))
+    ranges: list[str] = []
+    start = ordered[0]
+    end = ordered[0]
+    for hour in ordered[1:]:
+        if hour == end + 1:
+            end = hour
+            continue
+        ranges.append(f"{start}-{end}" if start != end else str(start))
+        start = end = hour
+    ranges.append(f"{start}-{end}" if start != end else str(start))
+    return ", ".join(ranges)
+
+
 def _in_bounds(lat: float, lon: float, bounds: dict[str, float]) -> bool:
     return (
         bounds["lat_min"] <= lat <= bounds["lat_max"]
@@ -370,13 +387,11 @@ def _parse_wind_observation(station: dict[str, Any], wind_payload: dict[str, Any
     )
 
 
-def _load_live_context(
+def _load_live_observations(
     horizon_hours: int,
-    requested_mode: SourceMode,
     region: RegionDefinition,
-    generated_at_override: datetime | None = None,
-) -> OperationalContext:
-    generated_at = (generated_at_override or _now()).replace(minute=0, second=0, microsecond=0)
+    generated_at: datetime,
+) -> tuple[list[dict[str, Any]], dict[int, list[VectorObservation]], list[VectorObservation]]:
     timeout = httpx.Timeout(settings.live_request_timeout_seconds)
     with httpx.Client(timeout=timeout) as client:
         current_stations = _fetch_live_current_stations(client, region)
@@ -403,6 +418,17 @@ def _load_live_context(
             except Exception:
                 continue
 
+    return current_stations, current_vectors_by_hour, met_vectors
+
+
+def _load_live_context(
+    horizon_hours: int,
+    requested_mode: SourceMode,
+    region: RegionDefinition,
+    generated_at_override: datetime | None = None,
+) -> OperationalContext:
+    generated_at = (generated_at_override or _now()).replace(minute=0, second=0, microsecond=0)
+    current_stations, current_vectors_by_hour, met_vectors = _load_live_observations(horizon_hours, region, generated_at)
     if not met_vectors:
         raise RuntimeError(f"No NOAA met stations with wind observations were available for region {region.id}.")
 
@@ -437,6 +463,77 @@ def _load_live_context(
     )
 
 
+def _load_auto_context(
+    horizon_hours: int,
+    seed: int,
+    requested_mode: SourceMode,
+    region: RegionDefinition,
+    generated_at_override: datetime | None = None,
+) -> OperationalContext:
+    generated_at = (generated_at_override or _now()).replace(minute=0, second=0, microsecond=0)
+    try:
+        current_stations, current_vectors_by_hour, met_vectors = _load_live_observations(horizon_hours, region, generated_at)
+    except Exception as exc:
+        context = _load_sample_context(horizon_hours, seed, requested_mode, region, generated_at)
+        context.is_fallback = True
+        context.source_notes.append(f"Live ingest failed and fell back to sample data: {exc}")
+        return context
+
+    live_hours: list[int] = []
+    sample_filled_hours: list[int] = []
+    frames: list[OperationalGridFrame] = []
+    use_sample_wind = not met_vectors
+
+    for horizon_hour in _forecast_hours(horizon_hours):
+        current_vectors = current_vectors_by_hour.get(horizon_hour, [])
+        if current_vectors:
+            live_hours.append(horizon_hour)
+        else:
+            sample_filled_hours.append(horizon_hour)
+            current_vectors = _sample_current_vectors(region, horizon_hour, seed)
+        wind_vectors = met_vectors if met_vectors else _sample_wind_vectors(region, horizon_hour, seed)
+        frames.append(
+            _build_frame(
+                valid_at=generated_at + timedelta(hours=horizon_hour),
+                horizon_hour=horizon_hour,
+                current_vectors=current_vectors,
+                wind_vectors=wind_vectors,
+                region=region,
+            )
+        )
+
+    if not live_hours:
+        context = _load_sample_context(horizon_hours, seed, requested_mode, region, generated_at)
+        context.is_fallback = True
+        context.source_notes.append("Live ingest failed and fell back to sample data: no live current coverage was available for any forecast hour.")
+        return context
+
+    is_hybrid = bool(sample_filled_hours or use_sample_wind)
+    source_mode_used = "hybrid" if is_hybrid else "live"
+    source_notes = [
+        f"Region: {region.name}",
+        f"NOAA CO-OPS live current-prediction stations: {len(current_stations)}",
+        f"NOAA CO-OPS live met stations: {len(met_vectors)}",
+    ]
+    if live_hours:
+        source_notes.append(f"Live current coverage used for forecast hours: {_format_hour_list(live_hours)}")
+    if sample_filled_hours:
+        source_notes.append(f"Sample current fill used for forecast hours: {_format_hour_list(sample_filled_hours)}")
+    if use_sample_wind:
+        source_notes.append("Sample wind fill used for all forecast hours because live met observations were unavailable.")
+
+    return OperationalContext(
+        generated_at=generated_at,
+        pilot_region=region.id,
+        region=region.to_info(),
+        source_mode_requested=requested_mode,
+        source_mode_used=source_mode_used,  # type: ignore[arg-type]
+        is_fallback=is_hybrid,
+        source_notes=source_notes,
+        frames=frames,
+    )
+
+
 def load_operational_context(
     horizon_hours: int,
     seed: int,
@@ -449,10 +546,4 @@ def load_operational_context(
         return _load_sample_context(horizon_hours, seed, source_mode, region, generated_at_override)
     if source_mode == "live":
         return _load_live_context(horizon_hours, source_mode, region, generated_at_override)
-    try:
-        return _load_live_context(horizon_hours, source_mode, region, generated_at_override)
-    except Exception as exc:
-        context = _load_sample_context(horizon_hours, seed, source_mode, region, generated_at_override)
-        context.is_fallback = True
-        context.source_notes.append(f"Live ingest failed and fell back to sample data: {exc}")
-        return context
+    return _load_auto_context(horizon_hours, seed, source_mode, region, generated_at_override)

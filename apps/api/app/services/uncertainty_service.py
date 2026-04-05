@@ -16,8 +16,8 @@ def build_uncertainty(
     confidence: dict[str, float] = {}
     max_density = max(corrected_density.values()) if corrected_density else 1.0
     max_spread = max((ensemble_spread or {"_": 0.0}).values()) if ensemble_spread else 1.0
-    horizon_factor = min(0.22, horizon_hour * 0.0045)
-    source_penalty = 0.09 if source_mode_used == "sample" else 0.03
+    horizon_factor = min(0.12, max(0, horizon_hour - 24) * 0.0025)
+    source_penalty = {"sample": 0.09, "hybrid": 0.06, "live": 0.03}.get(source_mode_used, 0.09)
     for point in grid:
         density_ratio = corrected_density[point.cell_id] / max_density if max_density > 0 else 0.0
         spread_ratio = (

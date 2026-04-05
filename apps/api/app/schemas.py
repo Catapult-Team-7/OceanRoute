@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 DebrisClass = Literal["low", "high"]
 FoundStatus = Literal["found", "not_found"]
 SourceMode = Literal["auto", "sample", "live"]
+SourceModeUsed = Literal["sample", "live", "hybrid"]
 RecommendedMode = Literal["collection", "recon"]
 ModelArchitecture = Literal["linear_residual", "temporal_unet", "convlstm"]
 TrainingStatus = Literal["pending", "completed", "failed"]
@@ -58,7 +59,7 @@ class ForecastProvenance(BaseModel):
     generated_at: datetime
     horizon_hours: int
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool
     is_stale: bool
     age_minutes: int
@@ -75,6 +76,7 @@ class ForecastProvenance(BaseModel):
     training_scope: TrainingScope | None = None
     used_candidate_override: bool = False
     used_inference_fallback: bool = False
+    model_fallback_reason: str | None = None
     inference_service_version: str | None = None
     prediction_artifact_uri: str | None = None
 
@@ -124,7 +126,7 @@ class OperationalContext(BaseModel):
     pilot_region: str
     region: RegionInfo
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool = False
     source_notes: list[str] = Field(default_factory=list)
     frames: list[OperationalGridFrame] = Field(default_factory=list)
@@ -193,7 +195,7 @@ class BaselineArtifact(BaseModel):
     forcing_refs: ForcingRefs
     baseline_engine: BaselineEngine
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool
     source_notes: list[str] = Field(default_factory=list)
     density_uri: str
@@ -282,7 +284,7 @@ class ForecastRunResponse(BaseModel):
     horizon_hours: int
     region: RegionInfo
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool
     is_stale: bool
     age_minutes: int
@@ -300,7 +302,7 @@ class ForecastSnapshot(BaseModel):
     pilot_region: str
     region: RegionInfo
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool
     is_stale: bool
     age_minutes: int
@@ -319,7 +321,7 @@ class HotspotQueryResponse(BaseModel):
     horizon_hours: int
     region: RegionInfo
     source_mode_requested: SourceMode
-    source_mode_used: Literal["sample", "live"]
+    source_mode_used: SourceModeUsed
     is_fallback: bool
     is_stale: bool
     age_minutes: int
@@ -620,6 +622,16 @@ class MissionOutcome(BaseModel):
     false_search_km: float = Field(default=0.0, ge=0.0)
     fuel_liters: float = Field(default=0.0, ge=0.0)
     route_deviation_reason: str | None = None
+    notes: str | None = None
+
+
+class MissionRecord(BaseModel):
+    mission_id: str
+    date: datetime
+    collected_kg: float = Field(default=0.0, ge=0.0)
+    distance_km: float = Field(default=0.0, ge=0.0)
+    hours: float = Field(default=0.0, ge=0.0)
+    mode: RecommendedMode = "collection"
     notes: str | None = None
 
 

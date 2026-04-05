@@ -91,6 +91,23 @@ def test_residual_model_outputs_non_negative_values() -> None:
     assert corrected["cell_2"] >= 0
 
 
+def test_residual_model_no_longer_penalizes_longer_horizons_directly() -> None:
+    payload = dict(
+        run_id="run",
+        debris_class="low",
+        baseline_density={"cell_1": 0.08, "cell_2": 0.14},
+        currents={"cell_1": (0.7, -0.2), "cell_2": (0.25, 0.15)},
+        winds={"cell_1": (-0.4, -0.2), "cell_2": (0.3, 0.15)},
+        history_bias={"cell_1": 0.12, "cell_2": -0.02},
+        shoreline={"cell_1": 0.25, "cell_2": 0.55},
+        ensemble_spread={"cell_1": 0.05, "cell_2": 0.07},
+        beaching_fraction={"cell_1": 0.04, "cell_2": 0.11},
+    )
+    corrected_24 = apply_residual_correction(ResidualModelInput(horizon_hour=24, **payload))
+    corrected_72 = apply_residual_correction(ResidualModelInput(horizon_hour=72, **payload))
+    assert corrected_24 == corrected_72
+
+
 def test_uncertainty_stays_bounded_and_confidence_is_inverse() -> None:
     uncertainty, confidence = build_uncertainty(
         build_grid(),

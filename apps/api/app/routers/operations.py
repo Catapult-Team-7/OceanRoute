@@ -5,9 +5,22 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.schemas import ImpactDashboard, MissionOutcome, ObservationUpload, RouteOptimizeRequest, RoutingBenchmarkReport
+from app.schemas import (
+    ImpactDashboard,
+    MissionOutcome,
+    MissionRecord,
+    ObservationUpload,
+    RouteOptimizeRequest,
+    RoutingBenchmarkReport,
+)
 from app.services.benchmark_service import latest_benchmark_report
-from app.services.impact_service import add_observation, impact_dashboard, log_mission_outcome
+from app.services.impact_service import (
+    add_observation,
+    impact_dashboard,
+    list_mission_records,
+    log_mission_outcome,
+    save_mission_record,
+)
 from app.services.region_service import get_region_definition
 
 router = APIRouter(tags=["operations"])
@@ -21,6 +34,16 @@ def observations_upload_endpoint(payload: ObservationUpload, db: Session = Depen
 @router.post("/cleanup/log", response_model=MissionOutcome)
 def cleanup_log_endpoint(payload: MissionOutcome, db: Session = Depends(get_db)) -> MissionOutcome:
     return log_mission_outcome(payload, db)
+
+
+@router.get("/missions", response_model=list[MissionRecord])
+def missions_endpoint(db: Session = Depends(get_db)) -> list[MissionRecord]:
+    return list_mission_records(db)
+
+
+@router.post("/missions", response_model=MissionRecord)
+def save_mission_endpoint(payload: MissionRecord, db: Session = Depends(get_db)) -> MissionRecord:
+    return save_mission_record(payload, db)
 
 
 @router.get("/impact/dashboard", response_model=ImpactDashboard)

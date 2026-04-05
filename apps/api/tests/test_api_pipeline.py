@@ -138,7 +138,7 @@ def test_auto_ingest_failure_is_exposed_as_sample_fallback(client, monkeypatch) 
 
     monkeypatch.setattr(
         ingest_service,
-        "_load_live_context",
+        "_load_live_observations",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("upstream timeout")),
     )
     response = client.post(
@@ -154,6 +154,28 @@ def test_auto_ingest_failure_is_exposed_as_sample_fallback(client, monkeypatch) 
 
     latest_payload = client.get("/api/forecast/latest").json()
     assert any("fell back to sample" in note for note in latest_payload["source_notes"])
+
+
+def test_mission_records_endpoints_round_trip(client) -> None:
+    mission_payload = {
+        "mission_id": "mission-ui-1",
+        "date": _now_iso(),
+        "collected_kg": 7.5,
+        "distance_km": 4.2,
+        "hours": 1.5,
+        "mode": "collection",
+        "notes": "Saved from the records screen.",
+    }
+    create_response = client.post("/api/missions", json=mission_payload)
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["mission_id"] == mission_payload["mission_id"]
+    assert created["collected_kg"] == mission_payload["collected_kg"]
+
+    list_response = client.get("/api/missions")
+    assert list_response.status_code == 200
+    listed = list_response.json()
+    assert any(item["mission_id"] == mission_payload["mission_id"] for item in listed)
 
 
 def test_stale_forecast_and_route_surface_freshness_metadata(client, db_session) -> None:

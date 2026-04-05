@@ -49,9 +49,25 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     },
     ...init,
   });
+  const contentType = response.headers.get("content-type") ?? "";
+  const isJsonResponse = contentType.includes("application/json");
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail ?? `Request failed with status ${response.status}`);
+    if (isJsonResponse) {
+      const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+      throw new Error(payload?.detail ?? `Request failed with status ${response.status}`);
+    }
+    const text = (await response.text().catch(() => "")).trim();
+    if (text.startsWith("<")) {
+      throw new Error(`Expected JSON from ${path} but received HTML. Check that the frontend proxy is connected to the backend API.`);
+    }
+    throw new Error(text || `Request failed with status ${response.status}`);
+  }
+  if (!isJsonResponse) {
+    const text = (await response.text().catch(() => "")).trim();
+    if (text.startsWith("<")) {
+      throw new Error(`Expected JSON from ${path} but received HTML. Check that the frontend proxy is connected to the backend API.`);
+    }
+    throw new Error(`Expected JSON from ${path} but received ${contentType || "a non-JSON response"}.`);
   }
   return response.json() as Promise<T>;
 }
@@ -74,25 +90,43 @@ function markerColor(step: ForecastStep): string {
   return "#c44536";
 }
 
-function buildRoutePolyline(route: RoutePlan | null, forecast: ForecastSnapshot | null, routeForm: RouteFormState): LatLngExpression[] {
-  if (!route || route.recommended_mode !== "collection" || !forecast) {
-    return [];
-  }
+function buildStepLookup(forecast: ForecastSnapshot | null): Map<string, ForecastStep> {
   const stepByKey = new Map<string, ForecastStep>();
-  forecast.steps.forEach((step) => {
+  forecast?.steps.forEach((step) => {
     stepByKey.set(`${step.cell_id}:${step.debris_class}`, step);
     if (!stepByKey.has(step.cell_id)) {
       stepByKey.set(step.cell_id, step);
     }
   });
+  return stepByKey;
+}
+
+function resolveRouteSteps(route: RoutePlan | null, forecast: ForecastSnapshot | null): ForecastStep[] {
+  if (!route || !forecast) {
+    return [];
+  }
+  const stepByKey = buildStepLookup(forecast);
+  const cellIds = route.recommended_mode === "collection" ? route.ordered_cell_ids : route.alternates;
+  return cellIds
+    .map((cellId) => stepByKey.get(cellId) ?? stepByKey.get(cellId.split(":")[0]))
+    .filter((step): step is ForecastStep => Boolean(step));
+}
+
+function buildRoutePolyline(route: RoutePlan | null, forecast: ForecastSnapshot | null, routeForm: RouteFormState): LatLngExpression[] {
+  if (!route) {
+    return [];
+  }
+  const previewSteps = resolveRouteSteps(route, forecast);
+  if (!previewSteps.length) {
+    return [];
+  }
   const coordinates: LatLngExpression[] = [[routeForm.depotLat, routeForm.depotLon]];
-  route.ordered_cell_ids.forEach((cellId) => {
-    const step = stepByKey.get(cellId) ?? stepByKey.get(cellId.split(":")[0]);
-    if (step) {
-      coordinates.push([step.lat, step.lon]);
-    }
+  previewSteps.forEach((step) => {
+    coordinates.push([step.lat, step.lon]);
   });
-  coordinates.push([routeForm.depotLat, routeForm.depotLon]);
+  if (route.recommended_mode === "collection") {
+    coordinates.push([routeForm.depotLat, routeForm.depotLon]);
+  }
   return coordinates;
 }
 
@@ -134,18 +168,44 @@ function baselineLabel(provenance: ForecastProvenance): string {
   return provenance.baseline_engine === "pygnome" ? "Baseline PyGNOME" : "Baseline custom particle";
 }
 
-function modelLabel(provenance: ForecastProvenance): string {
-  if (!provenance.model_id || !provenance.model_architecture) {
-    return "Baseline-only forecast";
+function modelDescriptor(provenance: ForecastProvenance): string | null {
+  if (!provenance.model_architecture) {
+    return null;
   }
   const scopeLabel = provenance.training_scope === "shared" ? "shared" : provenance.training_scope === "per_region" ? "regional" : null;
   const stageLabel = provenance.model_stage ? ` [${provenance.model_stage}]` : "";
-  const overrideLabel = provenance.used_candidate_override ? " candidate override" : "";
-  const fallbackLabel = provenance.used_inference_fallback ? " fallback used" : "";
   if (provenance.model_dataset_version) {
-    return `Model ${provenance.model_architecture} ${provenance.model_dataset_version}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}${overrideLabel}${fallbackLabel}`;
+    return `${provenance.model_architecture} ${provenance.model_dataset_version}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}`;
   }
-  return `Model ${provenance.model_architecture}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}${overrideLabel}${fallbackLabel}`;
+  return `${provenance.model_architecture}${scopeLabel ? ` (${scopeLabel})` : ""}${stageLabel}`;
+}
+
+function modelLabel(provenance: ForecastProvenance): string {
+  const descriptor = modelDescriptor(provenance);
+  const overrideLabel = provenance.used_candidate_override ? " candidate override" : "";
+  if (descriptor === null) {
+    return "Baseline-only forecast";
+  }
+  if (provenance.used_inference_fallback) {
+    return `Deep model fallback -> baseline (${descriptor})`;
+  }
+  return `Model ${descriptor}${overrideLabel}`;
+}
+
+function forecastExecutionLabel(provenance: ForecastProvenance): string {
+  const descriptor = modelDescriptor(provenance);
+  if (provenance.used_inference_fallback && descriptor) {
+    return `deep fallback (${descriptor})`;
+  }
+  if (descriptor) {
+    return `model inference (${descriptor})`;
+  }
+  return "baseline forecast";
+}
+
+function routeReason(route: RoutePlan | null): string | null {
+  const reason = route?.metadata?.reason;
+  return typeof reason === "string" ? reason : null;
 }
 
 function confidenceBand(snapshot: ForecastSnapshot | null): string {
@@ -462,7 +522,7 @@ export function App() {
       setRoute(null);
       setForecastMissing(false);
       setActionMessage(
-        `Forecast refreshed for ${snapshot.region.name} at ${formatTimestamp(snapshot.generated_at)} using ${modelLabel(
+        `Forecast refreshed for ${snapshot.region.name} at ${formatTimestamp(snapshot.generated_at)} using ${forecastExecutionLabel(
           snapshot.provenance,
         )}.`,
       );
@@ -492,6 +552,13 @@ export function App() {
           fuel_burn_lph: routeForm.fuelBurnLph,
           target_horizon_hour: filters.horizonHour,
           min_confidence: filters.minConfidence,
+          min_objective_score: 0.0,
+          objective_weights: {
+            yield_weight: 1.0,
+            distance_weight: 0.03,
+            uncertainty_weight: 2.0,
+            fuel_weight: 0.1,
+          },
         }),
       });
       setRoute(nextRoute);
@@ -499,7 +566,7 @@ export function App() {
       setActionMessage(
         nextRoute.recommended_mode === "collection"
           ? `Collection route created with ${nextRoute.ordered_cell_ids.length} stop(s).`
-          : `Recon plan returned. No collection route cleared the objective threshold.`,
+          : `Recon plan returned${routeReason(nextRoute) ? `: ${routeReason(nextRoute)}` : "."}`,
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to optimize route.");
@@ -581,9 +648,12 @@ export function App() {
   }
 
   const routePolyline = buildRoutePolyline(route, forecast, routeForm);
+  const routePreviewSteps = resolveRouteSteps(route, forecast);
   const activeProvenance = forecast?.provenance ?? null;
   const routeProvenance = route?.forecast_provenance ?? null;
   const selectedRegion = regions.find((region) => region.id === selectedRegionId) ?? forecast?.region ?? null;
+  const selectedAreaName = selectedRegion?.name ?? "this area";
+  const routePlannerReason = routeReason(route);
   const mapCenter: [number, number] = selectedRegion
     ? [selectedRegion.default_depot_lat, selectedRegion.default_depot_lon]
     : DEFAULT_CENTER;
@@ -744,10 +814,14 @@ export function App() {
               <span className="summary-label">Exports</span>
               <strong>PDF + GeoJSON</strong>
               <p className="export-links">
-                <a href={`${API_BASE}/export/pdf-brief`} target="_blank" rel="noreferrer">
+                <a href={`${API_BASE}/export/pdf-brief?region_id=${selectedRegionId ?? ""}`} target="_blank" rel="noreferrer">
                   PDF brief
                 </a>
-                <a href={`${API_BASE}/export/geojson?horizon_hour=${filters.horizonHour}`} target="_blank" rel="noreferrer">
+                <a
+                  href={`${API_BASE}/export/geojson?region_id=${selectedRegionId ?? ""}&horizon_hour=${filters.horizonHour}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   GeoJSON
                 </a>
               </p>
@@ -763,13 +837,13 @@ export function App() {
                 type="button"
                 disabled={loadingForecast}
               >
-                {loadingForecast ? "Broadcasting..." : "Broadcast forecast"}
+                {loadingForecast ? "Running..." : "Run fresh forecast"}
               </button>
               <div className="banner-meta">
                 {activeProvenance ? (
-                  <span>Last run: {formatTimestamp(activeProvenance.generated_at)} — {modelLabel(activeProvenance)}</span>
+                  <span>Last run: {formatTimestamp(activeProvenance.generated_at)} - {modelLabel(activeProvenance)}</span>
                 ) : (
-                  <span>No stored forecast yet. Run a broadcast to populate data.</span>
+                  <span>No stored forecast yet. Run a forecast for {selectedAreaName} to populate data.</span>
                 )}
               </div>
             </div>
@@ -864,6 +938,9 @@ export function App() {
               <span className="status-pill trust-pill">Confidence {confidenceBand(forecast)}</span>
             </div>
           ) : null}
+          {activeProvenance?.model_fallback_reason ? (
+            <p className="trust-note">{activeProvenance.model_fallback_reason}</p>
+          ) : null}
           <div className="legend-row">
             <span className="legend-chip legend-high">High confidence</span>
             <span className="legend-chip legend-medium">Usable with caution</span>
@@ -893,10 +970,47 @@ export function App() {
                   </Popup>
                 </CircleMarker>
               ))}
-              {routePolyline.length > 1 ? <Polyline pathOptions={{ color: "#0a5c8f", weight: 4 }} positions={routePolyline} /> : null}
+              {routePreviewSteps.map((step) => (
+                <CircleMarker
+                  key={`route-preview-${step.cell_id}-${step.debris_class}-${step.horizon_hour}`}
+                  center={[step.lat, step.lon]}
+                  radius={10}
+                  pathOptions={{
+                    color: route?.recommended_mode === "recon" ? "#a57600" : "#0a5c8f",
+                    fillColor: "#ffffff",
+                    fillOpacity: 0.22,
+                    weight: 2.4,
+                  }}
+                >
+                  <Popup>
+                    <strong>{route?.recommended_mode === "recon" ? "Recon preview" : "Route stop"}</strong>
+                    <br />
+                    {step.cell_id.replaceAll("_", " ")}
+                    <br />
+                    {formatRange(step.expected_kg_min, step.expected_kg_max)}
+                  </Popup>
+                </CircleMarker>
+              ))}
+              {routePolyline.length > 1 ? (
+                <Polyline
+                  pathOptions={
+                    route?.recommended_mode === "recon"
+                      ? { color: "#a57600", weight: 3, dashArray: "8 8" }
+                      : { color: "#0a5c8f", weight: 4 }
+                  }
+                  positions={routePolyline}
+                />
+              ) : null}
             </MapContainer>
           </div>
-          {forecastMissing ? <p className="empty-state">No forecast stored yet. Run the first forecast cycle to populate the map.</p> : null}
+          {forecastMissing ? (
+            <div className="empty-state">
+              <p>No forecast for {selectedAreaName} yet.</p>
+              <button className="secondary-button empty-state-button" onClick={handleRunForecast} type="button" disabled={loadingForecast}>
+                {loadingForecast ? "Running..." : "Run fresh forecast for this area"}
+              </button>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel">
@@ -920,7 +1034,16 @@ export function App() {
               </article>
             ))}
             {!forecast?.top_hotspots.length && !loadingForecast ? (
-              <p className="empty-state">No hotspots match the current filters.</p>
+              forecastMissing ? (
+                <div className="empty-state">
+                  <p>No forecast for {selectedAreaName} yet.</p>
+                  <button className="secondary-button empty-state-button" onClick={handleRunForecast} type="button" disabled={loadingForecast}>
+                    {loadingForecast ? "Running..." : "Run fresh forecast for this area"}
+                  </button>
+                </div>
+              ) : (
+                <p className="empty-state">No hotspots match the current filters.</p>
+              )
             ) : null}
           </div>
 
@@ -1011,6 +1134,7 @@ export function App() {
                   <strong>{formatPercent(1 - route.uncertainty_risk)}</strong>
                 </div>
               </div>
+              {routePlannerReason ? <p className="trust-note">{routePlannerReason}</p> : null}
               <div className="route-sequence">
                 <h3>Forecast provenance</h3>
                 {routeProvenance ? (
@@ -1023,6 +1147,9 @@ export function App() {
                     <p>
                       {baselineLabel(routeProvenance)} | {modelLabel(routeProvenance)}
                     </p>
+                    {routeProvenance.model_fallback_reason ? (
+                      <p className="trust-note">{routeProvenance.model_fallback_reason}</p>
+                    ) : null}
                   </div>
                 ) : (
                   <p>Route was optimized from ad hoc candidates rather than a stored forecast run.</p>

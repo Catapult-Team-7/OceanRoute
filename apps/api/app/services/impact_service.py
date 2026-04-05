@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import FeedbackEventModel, MissionOutcomeModel, ObservationModel
-from app.schemas import ImpactDashboard, MissionOutcome, ObservationUpload
+from app.schemas import ImpactDashboard, MissionOutcome, MissionRecord, ObservationUpload
 from app.services.artifact_service import write_debug_json
 
 
@@ -100,6 +100,54 @@ def log_mission_outcome(payload: MissionOutcome, db: Session) -> MissionOutcome:
         payload.model_dump(mode="json"),
     )
     return payload
+
+
+def list_mission_records(db: Session) -> list[MissionRecord]:
+    outcomes = db.execute(
+        select(MissionOutcomeModel).order_by(MissionOutcomeModel.completed_at.desc())
+    ).scalars().all()
+    return [
+        MissionRecord(
+            mission_id=outcome.mission_id,
+            date=outcome.completed_at,
+            collected_kg=outcome.collected_kg,
+            distance_km=outcome.vessel_distance_km,
+            hours=outcome.vessel_hours,
+            mode=outcome.recommended_mode,  # type: ignore[arg-type]
+            notes=outcome.notes,
+        )
+        for outcome in outcomes
+    ]
+
+
+def save_mission_record(payload: MissionRecord, db: Session) -> MissionRecord:
+    collected = max(payload.collected_kg, 0.0)
+    mission_outcome = MissionOutcome(
+        mission_id=payload.mission_id,
+        completed_at=payload.date,
+        vessel_id="local-ops-vessel",
+        recommended_mode=payload.mode,
+        predicted_kg_min=collected,
+        predicted_kg_max=collected,
+        collected_kg=collected,
+        vessel_distance_km=max(payload.distance_km, 0.0),
+        vessel_hours=max(payload.hours, 0.0),
+        hotspot_hits=1 if collected > 0 else 0,
+        hotspot_misses=0 if collected > 0 else 1,
+        false_search_km=0.0 if collected > 0 else max(payload.distance_km, 0.0),
+        fuel_liters=max(payload.hours, 0.0) * 12.0,
+        notes=payload.notes,
+    )
+    saved = log_mission_outcome(mission_outcome, db)
+    return MissionRecord(
+        mission_id=saved.mission_id,
+        date=saved.completed_at,
+        collected_kg=saved.collected_kg,
+        distance_km=saved.vessel_distance_km,
+        hours=saved.vessel_hours,
+        mode=saved.recommended_mode,  # type: ignore[arg-type]
+        notes=saved.notes,
+    )
 
 
 def impact_dashboard(db: Session) -> ImpactDashboard:

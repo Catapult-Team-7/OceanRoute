@@ -443,6 +443,7 @@ def get_route(mission_id: str, db: Session) -> RoutePlan | None:
                 training_scope=str(linked_run.summary.get("training_scope")) if linked_run.summary.get("training_scope") else None,
                 used_candidate_override=bool(linked_run.summary.get("used_candidate_override", False)),
                 used_inference_fallback=bool(linked_run.summary.get("used_inference_fallback", False)),
+                model_fallback_reason=str(linked_run.summary.get("model_fallback_reason")) if linked_run.summary.get("model_fallback_reason") else None,
                 inference_service_version=str(linked_run.summary.get("inference_service_version")) if linked_run.summary.get("inference_service_version") else None,
                 prediction_artifact_uri=str(linked_run.summary.get("prediction_artifact_uri")) if linked_run.summary.get("prediction_artifact_uri") else None,
             )

@@ -37,7 +37,12 @@ def run_baseline_diagnostics(payload, *, preferred_engine: str | None = None) ->
 
 
 def build_forcing_refs(region_name: str, *, source_mode_used: str) -> ForcingRefs:
-    source_prefix = "NOAA/IOOS live" if source_mode_used == "live" else "deterministic sample"
+    if source_mode_used == "live":
+        source_prefix = "NOAA/IOOS live"
+    elif source_mode_used == "hybrid":
+        source_prefix = "blended NOAA/IOOS live + deterministic sample"
+    else:
+        source_prefix = "deterministic sample"
     return ForcingRefs(
         current_source=f"{source_prefix} currents for {region_name}",
         wind_source=f"{source_prefix} winds for {region_name}",

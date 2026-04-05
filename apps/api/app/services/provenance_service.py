@@ -35,6 +35,7 @@ def build_forecast_provenance(
     training_scope: str | None = None,
     used_candidate_override: bool = False,
     used_inference_fallback: bool = False,
+    model_fallback_reason: str | None = None,
     inference_service_version: str | None = None,
     prediction_artifact_uri: str | None = None,
 ) -> ForecastProvenance:
@@ -62,6 +63,7 @@ def build_forecast_provenance(
         training_scope=training_scope,  # type: ignore[arg-type]
         used_candidate_override=used_candidate_override,
         used_inference_fallback=used_inference_fallback,
+        model_fallback_reason=model_fallback_reason,
         inference_service_version=inference_service_version,
         prediction_artifact_uri=prediction_artifact_uri,
     )

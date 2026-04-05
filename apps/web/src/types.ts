@@ -1,6 +1,7 @@
 export type DebrisClass = "low" | "high";
 export type RecommendedMode = "collection" | "recon";
 export type SourceMode = "auto" | "sample" | "live";
+export type SourceModeUsed = "sample" | "live" | "hybrid";
 export type BaselineEngine = "pygnome" | "custom_particle";
 export type ModelArchitecture = "linear_residual" | "temporal_unet" | "convlstm";
 export type TrainingScope = "shared" | "per_region";
@@ -76,7 +77,7 @@ export interface ForecastProvenance {
   generated_at: string;
   horizon_hours: number;
   source_mode_requested: SourceMode;
-  source_mode_used: "sample" | "live";
+  source_mode_used: SourceModeUsed;
   is_fallback: boolean;
   is_stale: boolean;
   age_minutes: number;
@@ -93,6 +94,7 @@ export interface ForecastProvenance {
   training_scope?: TrainingScope | null;
   used_candidate_override: boolean;
   used_inference_fallback: boolean;
+  model_fallback_reason?: string | null;
   inference_service_version?: string | null;
   prediction_artifact_uri?: string | null;
 }
@@ -104,7 +106,7 @@ export interface ForecastSnapshot {
   pilot_region: string;
   region: RegionInfo;
   source_mode_requested: SourceMode;
-  source_mode_used: "sample" | "live";
+  source_mode_used: SourceModeUsed;
   is_fallback: boolean;
   is_stale: boolean;
   age_minutes: number;
