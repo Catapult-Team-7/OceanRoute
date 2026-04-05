@@ -14,6 +14,7 @@ BACKEND_DIR = ROOT / "backend"
 FRONTEND_DIR = ROOT / "frontend"
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "oceanpulse-dev.log"
+API_PORT = "8765"
 
 
 def _stream_output(name: str, pipe, log_file):
@@ -35,7 +36,7 @@ def _backend_command() -> list[str]:
         raise FileNotFoundError(
             "Backend virtualenv not found. Create it first with `cd backend && python3.11 -m venv .venv`."
         )
-    return [str(python_bin), "-m", "uvicorn", "main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"]
+    return [str(python_bin), "-m", "uvicorn", "main:app", "--reload", "--host", "127.0.0.1", "--port", API_PORT]
 
 
 def _frontend_command() -> list[str]:

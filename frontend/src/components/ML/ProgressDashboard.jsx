@@ -1,55 +1,129 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
+import { fetchJson } from "../../utils/fetchJson";
+
+const API_LABEL = API_BASE || "current app origin";
 
 export default function ProgressDashboard() {
+  const lastHealthyAtRef = useRef(0);
   const [status, setStatus] = useState(null);
+  const [artifacts, setArtifacts] = useState(null);
   const [backendHealth, setBackendHealth] = useState({ reachable: false, detail: "Checking backend..." });
 
   useEffect(() => {
     let cancelled = false;
+    let statusTimer = null;
+    let artifactTimer = null;
+    let healthTimer = null;
+
+    function scheduleStatus(delayMs) {
+      window.clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(loadStatus, delayMs);
+    }
+
+    function scheduleArtifacts(delayMs) {
+      window.clearTimeout(artifactTimer);
+      artifactTimer = window.setTimeout(loadArtifacts, delayMs);
+    }
+
+    function scheduleHealth(delayMs) {
+      window.clearTimeout(healthTimer);
+      healthTimer = window.setTimeout(loadHealth, delayMs);
+    }
 
     async function loadHealth() {
       try {
-        const response = await fetch(`${API_BASE}/health`);
-        const data = await response.json();
+        await fetchJson(`${API_BASE}/health`, { timeoutMs: 15000 });
         if (!cancelled) {
-          setBackendHealth({
-            reachable: data.status === "ok",
-            detail: data.status === "ok" ? `Backend reachable at ${API_BASE}` : "Unexpected backend health response.",
-          });
+          lastHealthyAtRef.current = Date.now();
+          setBackendHealth((current) => ({
+            reachable: true,
+            detail:
+              status?.status === "running"
+                ? `Backend is busy at ${API_LABEL}, but responding.`
+                : `Backend reachable at ${API_LABEL}`,
+          }));
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && Date.now() - lastHealthyAtRef.current >= 180000) {
           setBackendHealth({
             reachable: false,
-            detail: `Backend unreachable at ${API_BASE}.`,
+            detail: `Backend unreachable at ${API_LABEL}.`,
           });
+        }
+      } finally {
+        if (!cancelled) {
+          scheduleHealth(status?.status === "running" ? 10000 : 20000);
         }
       }
     }
 
     async function loadStatus() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/status`);
-        const data = await response.json();
-        if (!cancelled) setStatus(data);
+        const data = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setStatus(data);
+          setBackendHealth({
+            reachable: true,
+            detail: data?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
       } catch (error) {
-        if (!cancelled) setStatus(null);
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: Date.now() - lastHealthyAtRef.current < 60000,
+            detail:
+              Date.now() - lastHealthyAtRef.current < 60000
+                ? `Backend is busy at ${API_LABEL}; waiting for status refresh.`
+                : `Backend unreachable at ${API_LABEL}.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          const running = status?.status === "running";
+          scheduleStatus(running ? 4000 : 8000);
+        }
       }
     }
 
-    loadHealth();
+    async function loadArtifacts() {
+      try {
+        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setArtifacts(data);
+          setBackendHealth((current) => ({
+            reachable: true,
+            detail:
+              current.reachable && current.detail.includes("busy")
+                ? current.detail
+                : `Backend reachable at ${API_LABEL}`,
+          }));
+        }
+      } catch (error) {
+        if (!cancelled && Date.now() - lastHealthyAtRef.current >= 60000) setArtifacts(null);
+      } finally {
+        if (!cancelled) {
+          scheduleArtifacts(status?.status === "running" ? 12000 : 20000);
+        }
+      }
+    }
+
     loadStatus();
-    const interval = window.setInterval(loadStatus, 1200);
-    const healthInterval = window.setInterval(loadHealth, 2500);
+    loadArtifacts();
+    loadHealth();
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
-      window.clearInterval(healthInterval);
+      window.clearTimeout(statusTimer);
+      window.clearTimeout(artifactTimer);
+      window.clearTimeout(healthTimer);
     };
-  }, []);
+  }, [status?.status]);
 
   const downloadProgress = status?.metrics?.download_progress;
   const connectorState = status?.data_summary?.connector_state || {};
@@ -148,6 +222,40 @@ export default function ProgressDashboard() {
           </article>
         </div>
         {status?.error ? <p className="error-copy">Training error: {status.error}</p> : null}
+      </div>
+
+      <div className="ml-section">
+        <h3>Published Artifacts</h3>
+        <div className="progress-timeline">
+          <article className="progress-card">
+            <span className="metric-label">
+              Data manifest
+              <InfoHint label="Data manifest" description="Prepared tensor and source coverage summary for batch or cluster training." />
+            </span>
+            <strong>{artifacts?.data_manifest ? "Ready" : "Missing"}</strong>
+            <small>{artifacts?.data_manifest?.tensor_build?.tensor_dir || "Run prepare to build reusable tensors."}</small>
+          </article>
+          <article className="progress-card">
+            <span className="metric-label">
+              Training manifest
+              <InfoHint label="Training manifest" description="Persistent training run metadata and checkpoint state." />
+            </span>
+            <strong>{artifacts?.training_manifest?.status || "missing"}</strong>
+            <small>
+              {artifacts?.training_manifest?.checkpoint_path ||
+                artifacts?.training_manifest?.resume_checkpoint_path ||
+                "No checkpoint manifest yet."}
+            </small>
+          </article>
+          <article className="progress-card">
+            <span className="metric-label">
+              Published map
+              <InfoHint label="Published map" description="Verified map bundle served to the homepage before any live rebuild attempt." />
+            </span>
+            <strong>{artifacts?.published_global_2deg?.verified_map ? "Verified" : "Missing"}</strong>
+            <small>{artifacts?.published_global_2deg?.date || "Run publish to generate a served map product."}</small>
+          </article>
+        </div>
       </div>
     </section>
   );

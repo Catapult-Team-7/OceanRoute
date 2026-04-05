@@ -52,3 +52,5 @@ data/
 *.db
 *.sqlite3
 alembic/__pycache__
+backend/artifacts/
+backend/ml/checkpoints/oceanpulse_resume.pt

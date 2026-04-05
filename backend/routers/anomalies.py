@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 
 from db.crud import get_recent_anomalies
 from db.database import get_repo
@@ -16,5 +17,5 @@ async def anomalies(
     date: str | None = Query(default=None, description="YYYY-MM"),
     repo: Annotated[DemoOceanRepository, Depends(get_repo)] = None,
 ):
-    records = await get_recent_anomalies(repo, threshold=threshold, limit=limit, date=date)
+    records = await run_in_threadpool(repo.get_recent_anomalies, threshold, limit, date)
     return {"anomalies": [record.model_dump() for record in records]}

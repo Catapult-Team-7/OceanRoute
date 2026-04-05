@@ -11,7 +11,13 @@ logger = logging.getLogger("oceanpulse.websocket")
 
 async def _heartbeat(ws: WebSocket):
     while True:
-        await ws.send_json({"type": "ping"})
+        try:
+            await ws.send_json({"type": "ping"})
+        except WebSocketDisconnect:
+            break
+        except Exception:
+            logger.info("websocket_heartbeat_stopped")
+            break
         await asyncio.sleep(30)
 
 
@@ -29,7 +35,7 @@ async def live_feed(ws: WebSocket):
         logger.info("websocket_disconnected client=%s", client)
     finally:
         heartbeat_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, WebSocketDisconnect):
             await heartbeat_task
         connected_clients.discard(ws)
         logger.info("websocket_cleanup client=%s active_clients=%s", client, len(connected_clients))

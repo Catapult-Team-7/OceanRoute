@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 
 class OceanPulseLSTM(nn.Module):
-    def __init__(self, in_channels: int = 9, hidden_dim: int = 96, pooled_size: tuple[int, int] = (6, 12)):
+    def __init__(self, in_channels: int = 13, hidden_dim: int = 96, pooled_size: tuple[int, int] = (6, 12)):
         super().__init__()
         self.pooled_size = pooled_size
         self.spatial_encoder = nn.Sequential(
@@ -33,10 +33,16 @@ class OceanPulseLSTM(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dim, 96, kernel_size=4, stride=2, padding=1),
+        self.latent_projector = nn.Sequential(
+            nn.Conv2d(hidden_dim, 128, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.ConvTranspose2d(96, 64, kernel_size=4, stride=2, padding=1),
+            nn.Conv2d(128, 96, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(96, 96, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(96, 64, kernel_size=3, padding=1),
             nn.GELU(),
             nn.Conv2d(64, 32, kernel_size=3, padding=1),
             nn.GELU(),
@@ -53,8 +59,9 @@ class OceanPulseLSTM(nn.Module):
         lstm_out, _ = self.lstm(encoded_sequence)
         latent = lstm_out[:, -1, :] + self.atm_projection(atm_co2)
         latent = latent.view(batch_size, -1, 1, 1).expand(-1, -1, self.pooled_size[0], self.pooled_size[1])
-        decoded = self.decoder(latent)
-        return F.interpolate(decoded, size=(height, width), mode="bilinear", align_corners=False)
+        decoded = self.latent_projector(latent)
+        decoded = F.interpolate(decoded, size=(height, width), mode="bilinear", align_corners=False)
+        return self.decoder(decoded)
 
 
 class AnomalyDetector(nn.Module):

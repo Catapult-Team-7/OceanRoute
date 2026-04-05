@@ -5,25 +5,30 @@ import InfoHint from "../common/InfoHint";
 export default function GlobalStats() {
   const globalStats = useOceanStore((state) => state.globalStats);
   const heatmapData = useOceanStore((state) => state.heatmapData);
+  const mlRuntimeStatus = useOceanStore((state) => state.mlRuntimeStatus);
   const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
 
   const cards = [
     {
       label: "Mean Flux",
       info: "Average air-sea CO2 flux across all map cells. Negative values mean net absorption by the ocean; positive values mean net release.",
-      value: verifiedMap ? formatFlux(globalStats.meanFlux) : "Unavailable",
-      sub: verifiedMap ? (globalStats.meanFlux < 0 ? "Net sink state" : "Net source state") : "Waiting for verified gridded data",
+      value: globalStats.meanFlux != null ? formatFlux(globalStats.meanFlux) : "Unavailable",
+      sub: verifiedMap
+        ? globalStats.meanFlux < 0
+          ? "Net sink state"
+          : "Net source state"
+        : "Provisional map estimate",
     },
     {
       label: "Sink Coverage",
       info: "Share of visible ocean cells where predicted flux is below zero. This is calculated as negative-flux cells divided by total mapped cells.",
-      value: verifiedMap && globalStats.sinkCoverage != null ? `${globalStats.sinkCoverage.toFixed(1)}%` : "Unavailable",
-      sub: verifiedMap ? "Ocean cells with negative flux" : "Suppressed until the map is source-backed",
+      value: globalStats.sinkCoverage != null ? `${globalStats.sinkCoverage.toFixed(1)}%` : "Unavailable",
+      sub: verifiedMap ? "Ocean cells with negative flux" : "Provisional sink coverage",
     },
     {
       label: "Model Status",
       info: "Shows whether the ML training pipeline has produced a checkpoint. It does not by itself guarantee the public map is verified.",
-      value: heatmapData?.metadata?.trained_model_ready ? "Trained" : "Baseline",
+      value: (heatmapData?.metadata?.trained_model_ready ?? mlRuntimeStatus?.model_ready) ? "Trained" : "Baseline",
       sub: heatmapData?.metadata?.verified_map
         ? "Can be compared against verified map inputs"
         : "Training exists, but the spatial map is not verified yet",

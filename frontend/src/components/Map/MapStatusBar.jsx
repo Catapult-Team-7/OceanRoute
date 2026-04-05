@@ -5,6 +5,7 @@ import InfoHint from "../common/InfoHint";
 
 export default function MapStatusBar() {
   const heatmapData = useOceanStore((state) => state.heatmapData);
+  const mlRuntimeStatus = useOceanStore((state) => state.mlRuntimeStatus);
   const anomalies = useOceanStore((state) => state.anomalies);
   const selectedRegion = useOceanStore((state) => state.selectedRegion);
 
@@ -17,13 +18,13 @@ export default function MapStatusBar() {
       sinkCells,
       maxWeakening,
       topRoutePriority,
-      modelReady: heatmapData?.metadata?.trained_model_ready,
-      mode: heatmapData?.metadata?.inference_mode || "observed_demo_baseline",
+      modelReady: heatmapData?.metadata?.trained_model_ready ?? mlRuntimeStatus?.model_ready ?? false,
+      mode: heatmapData?.metadata?.inference_mode || "real_grid_pending",
       verifiedMap: heatmapData?.metadata?.verified_map || false,
       mapSource: heatmapData?.metadata?.map_source || "unavailable",
       anomalyCount: anomalies.length,
     };
-  }, [anomalies.length, heatmapData]);
+  }, [anomalies.length, heatmapData, mlRuntimeStatus]);
 
   return (
     <div className="map-status-bar">
@@ -32,10 +33,10 @@ export default function MapStatusBar() {
           {summary.verifiedMap ? "Verified map" : "Map status"}
           <InfoHint
             label="Map status"
-            description="Tells you whether the visible geospatial layer comes from verified gridded data or from a non-production demo grid. Right now it stays unverified until the real spatial ingest is wired."
+            description="Tells you whether the visible geospatial layer comes from a verified checkpoint-backed grid or from a provisional real-data state while the published map catches up."
           />
         </strong>
-        <span>{summary.mode}</span>
+        <span>{summary.verifiedMap ? summary.mode : `provisional · ${summary.mode}`}</span>
       </div>
       <div className="map-status-chip">
         <strong className="metric-label">
@@ -72,7 +73,7 @@ export default function MapStatusBar() {
             description="Count of anomaly regions where observed or predicted sink behavior deviates from baseline expectations enough to surface an alert."
           />
         </strong>
-        <span>{summary.verifiedMap ? `${summary.anomalyCount} active anomalies` : "hidden until verified"}</span>
+        <span>{`${summary.anomalyCount} ${summary.anomalyCount === 1 ? "alert" : "alerts"} visible`}</span>
       </div>
       <div className="map-status-chip">
         <strong className="metric-label">
@@ -83,9 +84,7 @@ export default function MapStatusBar() {
           />
         </strong>
         <span>
-          {summary.verifiedMap
-            ? `${summary.sinkCells} sinks · ${summary.maxWeakening.toFixed(2)} weakening · ${summary.topRoutePriority.toFixed(2)} routing`
-            : "suppressed until real gridded data is wired"}
+          {`${summary.sinkCells} sinks · ${summary.maxWeakening.toFixed(2)} weakening · ${summary.topRoutePriority.toFixed(2)} routing`}
         </span>
       </div>
     </div>

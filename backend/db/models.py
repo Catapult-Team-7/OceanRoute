@@ -10,10 +10,15 @@ class FluxPoint(BaseModel):
     sst: float
     salinity: float
     wind_speed: float
+    current_u: float | None = None
+    current_v: float | None = None
+    sea_level: float | None = None
     chl_a: float
     anomaly_score: float = 0.0
     observed_flux: float | None = None
     predicted_flux: float | None = None
+    display_flux: float | None = None
+    display_signal: float | None = None
     weakening_score: float | None = None
     route_priority: float | None = None
     timestamp: datetime
@@ -32,6 +37,33 @@ class ForecastResponse(BaseModel):
     lon: float
     current_flux: float
     forecast: list[ForecastPoint]
+
+
+class PortHint(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    country: str | None = None
+    source: str = "nga_world_port_index"
+
+
+class TrashHotspot(BaseModel):
+    id: str
+    label: str
+    lat: float
+    lon: float
+    intensity: float
+    observed: bool = True
+    source: str
+    nearest_port: PortHint | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class TrashResponse(BaseModel):
+    source: str
+    observed: bool
+    source_summary: str
+    hotspots: list[TrashHotspot]
 
 
 class AnomalyRecord(BaseModel):
@@ -54,7 +86,7 @@ class HeatmapMetadata(BaseModel):
     inference_mode: str
     trained_model_ready: bool
     verified_map: bool = False
-    map_source: str = "synthetic_demo_grid"
+    map_source: str = "real_grid_unavailable"
     source_summary: str = ""
 
 
@@ -67,7 +99,11 @@ class FeatureProperties(BaseModel):
     flux: float
     observed_flux: float | None = None
     predicted_flux: float
+    display_flux: float | None = None
+    display_signal: float | None = None
     sst: float
+    current_u: float | None = None
+    current_v: float | None = None
     anomaly_score: float
     weakening_score: float
     route_priority: float

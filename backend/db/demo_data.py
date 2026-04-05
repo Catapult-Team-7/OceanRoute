@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from pathlib import Path
+import time
 
 from ingest.real_training_data import RealDataLoadError
+from pipeline.artifacts import load_best_published_map_bundle
 from .models import AnomalyRecord, ForecastPoint, ForecastResponse, FluxPoint
-from .real_products import build_real_grid_bundle, build_real_point_bundle
+from .real_products import build_provisional_real_grid_bundle, build_real_grid_bundle, build_real_point_bundle
 from ml.trainer import MLTrainerService
 
 
@@ -26,10 +28,21 @@ class DemoOceanRepository:
         self.trainer = MLTrainerService(self)
         self.last_grid_metadata = {
             "verified_map": False,
-            "map_source": "synthetic_demo_grid",
-            "source_summary": "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
+            "map_source": "real_grid_unavailable",
+            "source_summary": "No verified CO2 ocean layers are available until the real gridded pipeline succeeds.",
         }
         self.last_real_anomalies: list[AnomalyRecord] = []
+        self._grid_cache: dict[tuple, tuple[float, list[FluxPoint], dict, list[AnomalyRecord]]] = {}
+        self._grid_cache_ttl_seconds = 20.0
+
+    def _checkpoint_cache_token(self) -> tuple[str | None, int | None]:
+        checkpoint_path = self.trainer.state.model_summary.get("checkpoint_path")
+        if not checkpoint_path:
+            return None, None
+        path = Path(checkpoint_path)
+        if not path.exists():
+            return checkpoint_path, None
+        return str(path), path.stat().st_mtime_ns
 
     def _monthly_timestamp(self, date_str: str | None) -> datetime:
         if not date_str:
@@ -45,61 +58,36 @@ class DemoOceanRepository:
             lon_ok = lon >= min_lon or lon <= max_lon
         return min_lat <= lat <= max_lat and lon_ok
 
-    def _base_flux(self, lat: float, lon: float, timestamp: datetime) -> float:
-        seasonal = math.sin((timestamp.month / 12) * 2 * math.pi)
-        gyre = math.cos(math.radians(lon / 2.5)) * 0.8
-        lat_band = -2.6 * math.cos(math.radians(lat)) + 1.2
-        equatorial = math.exp(-((lat / 12) ** 2)) * 1.1
-        polar_sink = -0.9 * math.exp(-(((abs(lat) - 55) / 14) ** 2))
-        return lat_band + gyre + equatorial + polar_sink + seasonal * 0.35
-
-    def _anomaly_hotspots(self, timestamp: datetime) -> list[AnomalyRecord]:
-        ts = timestamp.replace(day=15, hour=6, minute=0, second=0, microsecond=0)
-        return [
-            AnomalyRecord(
-                id="north-pacific-gyre",
-                lat=33.5,
-                lon=-147.0,
-                region_name="North Pacific Gyre",
-                anomaly_score=0.89,
-                deviation_pct=-34.2,
-                detected_at=ts,
-                severity="high",
-            ),
-            AnomalyRecord(
-                id="south-atlantic-plume",
-                lat=-24.0,
-                lon=-8.0,
-                region_name="South Atlantic Plume",
-                anomaly_score=0.76,
-                deviation_pct=-21.4,
-                detected_at=ts - timedelta(hours=6),
-                severity="medium",
-            ),
-            AnomalyRecord(
-                id="arabian-sea-bloom",
-                lat=16.0,
-                lon=66.0,
-                region_name="Arabian Sea Bloom",
-                anomaly_score=0.93,
-                deviation_pct=18.9,
-                detected_at=ts - timedelta(hours=12),
-                severity="critical",
-            ),
-        ]
-
     def get_flux_grid(self, date: str | None, resolution: str, region: str) -> list[FluxPoint]:
+        cache_key = (date or "", resolution, region, *self._checkpoint_cache_token())
+        cached = self._grid_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and now_ts - cached[0] <= self._grid_cache_ttl_seconds:
+            _, rows, metadata, anomalies = cached
+            self.last_grid_metadata = metadata
+            self.last_real_anomalies = anomalies
+            return rows
+
+        published_bundle = load_best_published_map_bundle(region=region, resolution=resolution, date=date)
+        if published_bundle:
+            self.last_grid_metadata = published_bundle.get("metadata", {})
+            self.last_real_anomalies = [
+                AnomalyRecord.model_validate(item) for item in published_bundle.get("anomalies", [])
+            ]
+            rows = [FluxPoint.model_validate(item) for item in published_bundle.get("rows", [])]
+            self._grid_cache[cache_key] = (now_ts, rows, dict(self.last_grid_metadata), list(self.last_real_anomalies))
+            return rows
+
         noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
         socat_config = self.trainer._config_by_id("socat") or {}
         era_config = self.trainer._config_by_id("era5") or {}
         copernicus_config = self.trainer._config_by_id("copernicus_marine") or {}
         try:
-            real_bundle = build_real_grid_bundle(
+            provisional_bundle = build_provisional_real_grid_bundle(
                 date=date,
                 resolution=resolution,
                 region=region,
                 trainer=self.trainer,
-                socat_url=str(socat_config.get("url", "")).strip(),
                 noaa_gml_url=str(noaa_config.get("url", "")).strip(),
                 era_directory=str(era_config.get("notes", "")).strip(),
                 copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
@@ -107,63 +95,61 @@ class DemoOceanRepository:
                 else str(copernicus_config.get("notes", "")).strip(),
                 reference_now=self.now,
             )
-            self.last_grid_metadata = real_bundle.metadata
-            self.last_real_anomalies = real_bundle.anomalies
-            return real_bundle.rows
-        except RealDataLoadError:
-            self.last_grid_metadata = {
-                "verified_map": False,
-                "map_source": "synthetic_demo_grid",
-                "source_summary": "Spatial ocean map still uses synthetic demo fields. Do not treat map layers as verified until real gridded ingestion is wired.",
-            }
-            self.last_real_anomalies = []
-
-        timestamp = self._monthly_timestamp(date)
-        step = {
-            "0.25deg": 10,
-            "0.5deg": 8,
-            "1deg": 6,
-            "2deg": 12,
-        }.get(resolution, 6)
-        anomalies = self._anomaly_hotspots(timestamp)
-        rows: list[FluxPoint] = []
-        for lat in range(-72, 73, step):
-            for lon in range(-180, 181, step):
-                if not self._in_region(lat, lon, region):
-                    continue
-                flux = self._base_flux(lat, lon, timestamp)
-                anomaly_score = 0.0
-                for anomaly in anomalies:
-                    dist = math.hypot((lat - anomaly.lat) / 10, (lon - anomaly.lon) / 14)
-                    impact = math.exp(-(dist**2))
-                    anomaly_score = max(anomaly_score, anomaly.anomaly_score * impact)
-                    flux += (anomaly.deviation_pct / 100) * 0.6 * impact
-                sst = max(-1.5, 28 - abs(lat) * 0.32 + math.sin(math.radians(lon)) * 1.7)
-                salinity = 34.2 + math.cos(math.radians(lon / 1.8)) * 1.2 - abs(lat) * 0.008
-                wind_speed = 4.5 + abs(math.sin(math.radians(lat * 2))) * 6.0
-                chl_a = max(0.02, 0.8 + math.cos(math.radians(lat * 3)) * 0.4)
-                rows.append(
-                    FluxPoint(
-                        lat=float(lat),
-                        lon=float(lon),
-                        co2_flux=round(flux, 4),
-                        sst=round(sst, 2),
-                        salinity=round(salinity, 2),
-                        wind_speed=round(wind_speed, 2),
-                        chl_a=round(chl_a, 3),
-                        anomaly_score=round(min(anomaly_score, 1.0), 4),
-                        timestamp=timestamp,
-                    )
+            self.last_grid_metadata = provisional_bundle.metadata
+            self.last_real_anomalies = provisional_bundle.anomalies
+            self._grid_cache[cache_key] = (
+                now_ts,
+                list(provisional_bundle.rows),
+                dict(provisional_bundle.metadata),
+                list(provisional_bundle.anomalies),
+            )
+            return provisional_bundle.rows
+        except RealDataLoadError as exc:
+            try:
+                real_bundle = build_real_grid_bundle(
+                    date=date,
+                    resolution=resolution,
+                    region=region,
+                    trainer=self.trainer,
+                    socat_url=str(socat_config.get("url", "")).strip(),
+                    noaa_gml_url=str(noaa_config.get("url", "")).strip(),
+                    era_directory=str(era_config.get("notes", "")).strip(),
+                    copernicus_directory=str(copernicus_config.get("notes", "")).split("path=", 1)[-1].split(";", 1)[0].strip()
+                    if "path=" in str(copernicus_config.get("notes", ""))
+                    else str(copernicus_config.get("notes", "")).strip(),
+                    reference_now=self.now,
                 )
-        return rows
+                real_bundle.metadata["source_summary"] = (
+                    f"{real_bundle.metadata.get('source_summary', '')} Fast provisional serving was unavailable: {exc}"
+                ).strip()
+                self.last_grid_metadata = real_bundle.metadata
+                self.last_real_anomalies = real_bundle.anomalies
+                self._grid_cache[cache_key] = (
+                    now_ts,
+                    list(real_bundle.rows),
+                    dict(real_bundle.metadata),
+                    list(real_bundle.anomalies),
+                )
+                return real_bundle.rows
+            except RealDataLoadError:
+                self.last_grid_metadata = {
+                    "verified_map": False,
+                    "trained_model_ready": bool(self.trainer.state.model_ready),
+                    "inference_mode": self.trainer.state.model_summary.get("mode", "real_monthly_convlstm"),
+                    "map_source": "real_grid_unavailable",
+                    "source_summary": (
+                        "No verified CO2 ocean layers are available because the checkpoint-backed map build failed: "
+                        f"{exc}"
+                    ),
+                }
+                self.last_real_anomalies = []
+                return []
 
     def get_recent_anomalies(self, threshold: float, limit: int, date: str | None = None) -> list[AnomalyRecord]:
-        if self.last_grid_metadata.get("verified_map") and self.last_real_anomalies:
+        if self.last_real_anomalies:
             anomalies = [a for a in self.last_real_anomalies if a.anomaly_score >= threshold]
             return anomalies[:limit]
-        timestamp = self._monthly_timestamp(date)
-        anomalies = [a for a in self._anomaly_hotspots(timestamp) if a.anomaly_score >= threshold]
-        return anomalies[:limit]
+        return []
 
     def get_point_forecast(self, lat: float, lon: float, horizon_hours: int) -> ForecastResponse:
         noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
@@ -184,26 +170,19 @@ class DemoOceanRepository:
             return point_bundle.forecast
         except RealDataLoadError:
             pass
-
-        current = self._base_flux(lat, lon, self.now)
-        steps = [hours for hours in (24, 48, 72) if hours <= max(horizon_hours, 24)]
-        forecast: list[ForecastPoint] = []
-        for hours in steps:
-            drift = math.sin(math.radians(lon + hours)) * 0.12 + math.cos(math.radians(lat * 2)) * -0.09
-            flux = current + drift * (hours / 24)
-            spread = 0.32 + (hours / 72) * 0.28
-            forecast.append(
-                ForecastPoint(
-                    hours_ahead=hours,
-                    flux=round(flux, 3),
-                    confidence_low=round(flux - spread, 3),
-                    confidence_high=round(flux + spread, 3),
-                )
-            )
-        return ForecastResponse(lat=lat, lon=lon, current_flux=round(current, 3), forecast=forecast)
+        raise RealDataLoadError("Point forecast is unavailable until real monthly drivers and a trained checkpoint are available.")
 
     def get_global_stats(self, date: str | None) -> dict:
         rows = self.get_flux_grid(date=date, resolution="2deg", region="global")
+        if not rows:
+            return {
+                "date": date or self.now.strftime("%Y-%m"),
+                "mean_flux": None,
+                "sink_area_pct": None,
+                "strongest_sink": None,
+                "verified_map": self.last_grid_metadata.get("verified_map", False),
+                "map_source": self.last_grid_metadata.get("map_source", "real_grid_unavailable"),
+            }
         mean_flux = sum(row.co2_flux for row in rows) / max(len(rows), 1)
         sink_area_pct = sum(1 for row in rows if row.co2_flux < 0) / max(len(rows), 1) * 100
         strongest_sink = min(rows, key=lambda row: row.co2_flux)
@@ -217,7 +196,7 @@ class DemoOceanRepository:
                 "flux": strongest_sink.co2_flux,
             },
             "verified_map": self.last_grid_metadata.get("verified_map", False),
-            "map_source": self.last_grid_metadata.get("map_source", "synthetic_demo_grid"),
+            "map_source": self.last_grid_metadata.get("map_source", "real_grid_unavailable"),
         }
 
     def get_point_history(self, lat: float, lon: float, months: int = 12) -> list[dict]:
@@ -238,10 +217,4 @@ class DemoOceanRepository:
             )
             return point_bundle.history[-months:]
         except RealDataLoadError:
-            pass
-
-        items = []
-        for offset in range(months - 1, -1, -1):
-            ts = (self.now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30 * offset))
-            items.append({"date": ts.strftime("%Y-%m"), "flux": round(self._base_flux(lat, lon, ts), 3)})
-        return items
+            return []

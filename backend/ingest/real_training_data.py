@@ -532,6 +532,7 @@ def build_real_training_dataset(
         "available": False,
         "path": str(Path(era_directory) if era_directory else default_era5_directory()),
     }
+    copernicus_monthly: pd.DataFrame | None = None
     try:
         era_monthly = load_era5_monthly(era_directory)
         merged = merged.merge(era_monthly, on=["year", "month"], how="left")
@@ -576,7 +577,7 @@ def build_real_training_dataset(
     merged["wind_speed"] = merged.get("era5_wind_speed", pd.Series(index=merged.index, dtype=float))
     if merged["wind_speed"].notna().sum() == 0:
         raise RealDataLoadError(
-            "ERA5 wind enrichment is required for real flux targets. Put real ERA5 CSVs in Training_Data/ERA or set ERA5_LOCAL_PATH."
+            "ERA5 wind enrichment is required for real flux targets. Put real ERA5 CSVs in ~/OceanPulseData/ERA or set ERA5_LOCAL_PATH."
         )
     merged["current_u"] = merged.get("copernicus_u", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
     merged["current_v"] = merged.get("copernicus_v", pd.Series(index=merged.index, dtype=float)).fillna(0.0)
@@ -629,6 +630,20 @@ def build_real_training_dataset(
         (int(row.year), int(row.month)): float(row.pco2_atm)
         for row in atmospheric.itertuples(index=False)
     }
+    observed_coverage = {
+        "lat_min": round(float(merged["lat"].min()), 3),
+        "lat_max": round(float(merged["lat"].max()), 3),
+        "lon_min": round(float(merged["lon"].min()), 3),
+        "lon_max": round(float(merged["lon"].max()), 3),
+    }
+    gridded_coverage = observed_coverage
+    if copernicus_monthly is not None and not copernicus_monthly.empty:
+        gridded_coverage = {
+            "lat_min": round(float(copernicus_monthly["lat_bin"].min()), 3),
+            "lat_max": round(float(copernicus_monthly["lat_bin"].max()), 3),
+            "lon_min": round(float(copernicus_monthly["lon_bin"].min()), 3),
+            "lon_max": round(float(copernicus_monthly["lon_bin"].max()), 3),
+        }
     summary = {
         "source": "real_observation_sample",
         "target_mode": "flux_from_socat_plus_noaa_gml",
@@ -640,12 +655,9 @@ def build_real_training_dataset(
         "feature_names": feature_names,
         "era5": era_summary,
         "copernicus": copernicus_summary,
-        "coverage": {
-            "lat_min": round(float(merged["lat"].min()), 3),
-            "lat_max": round(float(merged["lat"].max()), 3),
-            "lon_min": round(float(merged["lon"].min()), 3),
-            "lon_max": round(float(merged["lon"].max()), 3),
-        },
+        "coverage": gridded_coverage,
+        "observed_coverage": observed_coverage,
+        "gridded_coverage": gridded_coverage,
         "real_sources_only": True,
         "reference_now": reference_now.astimezone(timezone.utc).isoformat(),
     }

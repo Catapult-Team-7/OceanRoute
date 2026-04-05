@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
+from ingest.fetch_global_fishing_watch import GlobalFishingWatchError, search_vessels
+from ingest.fetch_trash import TrashDataError, load_trash_observations
 from ingest.fetch_copernicus import (
     CopernicusSyncError,
     default_copernicus_directory,
@@ -15,6 +17,7 @@ from ingest.fetch_copernicus import (
     sync_copernicus_salinity,
     sync_copernicus_temperature,
 )
+from ingest.fetch_world_port_index import DEFAULT_WORLD_PORT_INDEX_URL, fetch_world_ports
 from ingest.real_training_data import (
     DEFAULT_NOAA_GML_CO2_URL,
     DEFAULT_SOCAT_ERDDAP_URL,
@@ -82,11 +85,14 @@ class DataConnectorService:
             return self._preview_socat()
         if connector_id == "noaa_gml_co2":
             return self._preview_noaa_gml()
-        if connector_id == "nasa_ocean_color":
-            return self._preview_static(
-                connector_id,
-                message="NASA Ocean Color requires a product selection and often Earthdata-authenticated downloads. Configure the product URL first.",
-            )
+        if connector_id == "global_fishing_watch":
+            return self._preview_global_fishing_watch()
+        if connector_id == "world_port_index":
+            return self._preview_world_port_index()
+        if connector_id == "emodnet_litter":
+            return self._preview_trash_feed(connector_id, default_portal="https://emodnet.ec.europa.eu/en/chemistry")
+        if connector_id == "oceanscan":
+            return self._preview_trash_feed(connector_id, default_portal="https://www.oceanscan.org")
         return {"status": "error", "message": f"Unknown connector: {connector_id}"}
 
     def sync(self, connector_id: str):
@@ -104,11 +110,12 @@ class DataConnectorService:
             or default_copernicus_directory()
         )
         before_files = sorted(output_directory.glob("*.nc")) if output_directory.exists() else []
+        months_to_sync = max(self.trainer.expected_month_window() + 1, 6)
         self._set_progress_state(
             stage="syncing_copernicus",
             detail=(
-                f"Syncing monthly surface-only Copernicus training files into {output_directory} "
-                f"for the hackathon Pacific window (-160 to -120 lon, 15 to 40 lat)."
+                f"Syncing {months_to_sync} months of monthly surface-only Copernicus training files into "
+                f"{output_directory} for the configured window."
             ),
             progress=0.05,
         )
@@ -130,7 +137,7 @@ class DataConnectorService:
                     total=len(sync_steps),
                     current=label,
                 )
-                downloads.append(sync_fn(months=2, overrides=note_settings))
+                downloads.append(sync_fn(months=months_to_sync, overrides=note_settings))
         except CopernicusSyncError as exc:
             self._set_progress_state(
                 stage="syncing_copernicus_failed",
@@ -167,6 +174,7 @@ class DataConnectorService:
             "connector_name": config["name"],
             "status": "ready",
             "message": "Copernicus monthly training subsets finished syncing.",
+            "months_synced": months_to_sync,
             "downloads": downloads,
             "output_directory": str(output_directory),
             "local_netcdf_count_before": len(before_files),
@@ -182,15 +190,18 @@ class DataConnectorService:
                 return item
         return None
 
-    def _preview_static(self, connector_id: str, message: str):
+    def _preview_static(self, connector_id: str, message: str, extra: dict | None = None):
         config = self._config_for(connector_id)
-        return {
+        payload = {
             "connector_id": connector_id,
             "connector_name": config["name"] if config else connector_id,
             "status": "needs_config",
             "message": message,
             "config": config,
         }
+        if extra:
+            payload.update(extra)
+        return payload
 
     def _preview_copernicus(self):
         config = self._config_for("copernicus_marine")
@@ -208,11 +219,11 @@ class DataConnectorService:
                 "monthly_training": ["uo", "vo", "so", "thetao"],
                 "routing": ["uo", "vo", "zos"],
             },
-            "min_longitude": -160,
-            "max_longitude": -120,
-            "min_latitude": 15,
-            "max_latitude": 40,
-            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;min_depth=0;max_depth=1;path=Training_Data/Copernicus",
+            "min_longitude": -180,
+            "max_longitude": 180,
+            "min_latitude": -80,
+            "max_latitude": 80,
+            "notes_format": "monthly_physics_dataset_id=<id>;routing_dataset_id=<id>;min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80;min_depth=0;max_depth=1;path=Training_Data/Copernicus",
         }
         output_directory = resolve_copernicus_output_directory(
             note_settings.get("path", "").strip()
@@ -325,7 +336,7 @@ class DataConnectorService:
             "base_url": "https://tds.hycom.org/thredds/dodsC/GLBy0.08/expt_93.0",
             "variables": ["water_u", "water_v"],
             "depth_index": 0,
-            "region": {"min_longitude": -160, "max_longitude": -120, "min_latitude": 15, "max_latitude": 40},
+            "region": {"min_longitude": -180, "max_longitude": 180, "min_latitude": -80, "max_latitude": 80},
         }
         return {
             "connector_id": "noaa_hycom",
@@ -335,6 +346,103 @@ class DataConnectorService:
             "request_template": example,
             "config": config,
         }
+
+    def _preview_world_port_index(self):
+        config = self._config_for("world_port_index")
+        feature_service = str(config.get("notes", "")).strip() or str(config.get("url", "")).strip() or DEFAULT_WORLD_PORT_INDEX_URL
+        if "FeatureServer" not in feature_service:
+            return self._preview_static(
+                "world_port_index",
+                message="Set this connector to a World Port Index ArcGIS FeatureServer endpoint.",
+                extra={"feature_service": DEFAULT_WORLD_PORT_INDEX_URL},
+            )
+        try:
+            ports = fetch_world_ports(
+                feature_service_url=feature_service,
+                min_lat=15,
+                max_lat=40,
+                min_lon=-160,
+                max_lon=-120,
+                limit=5,
+            )
+            return {
+                "connector_id": "world_port_index",
+                "connector_name": config["name"],
+                "status": "ready",
+                "message": "World Port Index sample loaded successfully.",
+                "records": [port.__dict__ for port in ports],
+                "feature_service": feature_service,
+                "config": config,
+            }
+        except Exception as exc:
+            return {
+                "connector_id": "world_port_index",
+                "connector_name": config["name"],
+                "status": "error",
+                "message": str(exc),
+                "feature_service": feature_service,
+                "config": config,
+            }
+
+    def _preview_global_fishing_watch(self):
+        config = self._config_for("global_fishing_watch")
+        try:
+            sample = search_vessels("san", limit=2)
+            return {
+                "connector_id": "global_fishing_watch",
+                "connector_name": config["name"],
+                "status": "ready",
+                "message": "Global Fishing Watch token is configured and vessel search is working.",
+                "records": sample.get("entries", [])[:2],
+                "api_docs": ["https://globalfishingwatch.org/our-apis/documentation"],
+                "config": config,
+            }
+        except GlobalFishingWatchError as exc:
+            return {
+                "connector_id": "global_fishing_watch",
+                "connector_name": config["name"],
+                "status": "needs_config",
+                "message": str(exc),
+                "api_docs": ["https://globalfishingwatch.org/our-apis/documentation"],
+                "config": config,
+            }
+        except Exception as exc:
+            return {
+                "connector_id": "global_fishing_watch",
+                "connector_name": config["name"],
+                "status": "error",
+                "message": str(exc),
+                "api_docs": ["https://globalfishingwatch.org/our-apis/documentation"],
+                "config": config,
+            }
+
+    def _preview_trash_feed(self, connector_id: str, default_portal: str):
+        config = self._config_for(connector_id)
+        data_url = str(config.get("notes", "")).strip() or str(config.get("url", "")).strip()
+        if data_url == default_portal or not data_url:
+            return self._preview_static(
+                connector_id,
+                message="Configure this connector with a direct JSON, GeoJSON, or CSV data URL to preview measured trash observations.",
+                extra={"portal": default_portal},
+            )
+        try:
+            records = load_trash_observations(data_url, limit=5)
+            return {
+                "connector_id": connector_id,
+                "connector_name": config["name"],
+                "status": "ready",
+                "message": "Trash observation sample loaded successfully.",
+                "records": records,
+                "config": config,
+            }
+        except TrashDataError as exc:
+            return {
+                "connector_id": connector_id,
+                "connector_name": config["name"],
+                "status": "error",
+                "message": str(exc),
+                "config": config,
+            }
 
     def _preview_erddap_like(self, connector_id: str, default_search: str, default_url: str):
         config = self._config_for(connector_id)

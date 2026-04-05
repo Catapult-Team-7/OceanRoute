@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from db.demo_data import DemoOceanRepository
-from routers import anomalies, connectors, forecast, heatmap, ml, stats, websocket
+from routers import anomalies, connectors, forecast, heatmap, ml, stats, trash, websocket
 
 
 def configure_logging():
@@ -154,6 +154,7 @@ app.include_router(anomalies.router, prefix="/api", tags=["anomalies"])
 app.include_router(connectors.router, prefix="/api", tags=["connectors"])
 app.include_router(ml.router, prefix="/api", tags=["ml"])
 app.include_router(stats.router, prefix="/api", tags=["stats"])
+app.include_router(trash.router, prefix="/api", tags=["trash"])
 app.include_router(websocket.router, tags=["websocket"])
 
 

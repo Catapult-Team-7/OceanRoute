@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
 import { HACKATHON_API_DEFAULTS } from "../../utils/demoMissionData";
+import { fetchJson } from "../../utils/fetchJson";
 
 const DEFAULT_FORM = {
-  epochs: 18,
-  learning_rate: 0.05,
+  epochs: 10,
+  learning_rate: 0.005,
   month_window: 12,
   resolution: "2deg",
   quick_test: false,
@@ -14,12 +15,12 @@ const DEFAULT_FORM = {
 
 const MODEL_LIMITS = [
   {
-    title: "Labels are still sparse",
-    copy: "The ConvLSTM now trains on monthly aligned tensors, but target coverage still depends on where SOCAT observations exist.",
+    title: "Dense targets are proxy-calibrated",
+    copy: "The ConvLSTM now trains on global gridded targets built from Copernicus, ERA5, and NOAA, then anchored back to SOCAT observations where they exist.",
   },
   {
     title: "Biogeochemical drivers are incomplete",
-    copy: "Currents, salinity, temperature, sea level, and atmospheric CO2 are supported, but chlorophyll and richer ecosystem drivers are still missing.",
+    copy: "Currents, salinity, temperature, sea level, and atmospheric CO2 are supported, but debris observations, vessel intelligence, and richer ecosystem drivers are still missing.",
   },
   {
     title: "Routing is partially forced",
@@ -31,16 +32,23 @@ const NEXT_DATASETS = [
   "Global ERA5 grids or regional tiles for wind, pressure, radiation, and waves",
   "HYCOM or Copernicus current fields for advection and routing",
   "Copernicus salinity grids aligned to the same monthly mesh",
-  "NASA Ocean Color chlorophyll-a fields for biological uptake",
+  "Measured marine debris observations for replacing modeled trash targets",
+  "AIS vessel movement, identity, and port visits for real route feasibility",
   "Plastic/debris concentration observations for route supervision rather than hand-authored hotspots",
 ];
 
+const API_LABEL = API_BASE || "current app origin";
+
 export default function MLLab() {
+  const lastHealthyAtRef = useRef(0);
   const [status, setStatus] = useState(null);
+  const [artifacts, setArtifacts] = useState(null);
   const [apiDrafts, setApiDrafts] = useState([]);
   const [form, setForm] = useState(DEFAULT_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingApis, setIsSavingApis] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [previewById, setPreviewById] = useState({});
   const [previewingId, setPreviewingId] = useState("");
   const [syncingId, setSyncingId] = useState("");
@@ -50,68 +58,126 @@ export default function MLLab() {
   const connectorState = dataSummary.connector_state || {};
   const usingRealData = dataSummary.source === "real_observation_sample";
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadHealth() {
-      try {
-        const response = await fetch(`${API_BASE}/health`);
-        if (!response.ok) {
-          throw new Error(`Health check returned ${response.status}`);
-        }
-        const data = await response.json();
-        if (!cancelled) {
-          setBackendHealth({
-            reachable: data.status === "ok",
-            checked: true,
-            detail: data.status === "ok" ? `Backend reachable at ${API_BASE}` : `Unexpected health response from ${API_BASE}`,
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setBackendHealth({
-            reachable: false,
-            checked: true,
-            detail: `Backend unreachable at ${API_BASE}. Start or restart the backend and try again.`,
-          });
-        }
-      }
+  async function checkBackendHealth() {
+    try {
+      await fetchJson(`${API_BASE}/health`, { timeoutMs: 15000 });
+      lastHealthyAtRef.current = Date.now();
+      const nextHealth = {
+        reachable: true,
+        checked: true,
+        detail: `Backend reachable at ${API_LABEL}`,
+      };
+      setBackendHealth(nextHealth);
+      return nextHealth;
+    } catch (error) {
+      const recentlyHealthy = Date.now() - lastHealthyAtRef.current < 60000;
+      const nextHealth = {
+        reachable: recentlyHealthy,
+        checked: true,
+        detail: recentlyHealthy
+          ? `Backend is busy at ${API_LABEL}; waiting for it to respond.`
+          : `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
+      };
+      setBackendHealth(nextHealth);
+      return nextHealth;
     }
+  }
 
-    loadHealth();
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    checkBackendHealth();
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
+
+    async function loadArtifacts() {
+      try {
+        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setArtifacts(data);
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: status?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to load ML artifacts", error);
+        if (!cancelled && Date.now() - lastHealthyAtRef.current < 60000) {
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: `Backend is busy at ${API_LABEL}; waiting for artifact refresh.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(loadArtifacts, status?.status === "running" ? 12000 : 20000);
+        }
+      }
+    }
+
+    loadArtifacts();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [status?.status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
 
     async function loadStatus() {
       try {
-        const statusResponse = await fetch(`${API_BASE}/api/ml/status`);
-        const statusData = await statusResponse.json();
-        if (!cancelled) setStatus(statusData);
+        const statusData = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 15000 });
+        if (!cancelled) {
+          lastHealthyAtRef.current = Date.now();
+          setStatus(statusData);
+          setBackendHealth({
+            reachable: true,
+            checked: true,
+            detail: statusData?.status === "running"
+              ? `Backend is busy at ${API_LABEL}, but responding.`
+              : `Backend reachable at ${API_LABEL}`,
+          });
+        }
       } catch (error) {
         console.error("Failed to load ML status", error);
+        if (!cancelled) {
+          setBackendHealth({
+            reachable: Date.now() - lastHealthyAtRef.current < 60000,
+            checked: true,
+            detail:
+              Date.now() - lastHealthyAtRef.current < 60000
+                ? `Backend is busy at ${API_LABEL}; waiting for status refresh.`
+                : `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(loadStatus, status?.status === "running" ? 4000 : 8000);
+        }
       }
     }
 
     loadStatus();
-    const interval = window.setInterval(loadStatus, 1200);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [status?.status]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadApis() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/apis`);
-        const data = await response.json();
+        const data = await fetchJson(`${API_BASE}/api/ml/apis`, { timeoutMs: 15000 });
         if (!cancelled) {
           setApiDrafts(data.apis?.length ? data.apis : HACKATHON_API_DEFAULTS);
         }
@@ -132,8 +198,9 @@ export default function MLLab() {
   async function startTraining() {
     setIsSubmitting(true);
     try {
-      if (!backendHealth.reachable) {
-        throw new Error(`Backend unreachable at ${API_BASE}. Check that /health responds before training.`);
+      const liveHealth = await checkBackendHealth();
+      if (!liveHealth.reachable) {
+        throw new Error(`Backend unreachable at ${API_LABEL}. Check that /health responds before training.`);
       }
       await saveApis();
       const response = await fetch(`${API_BASE}/api/ml/train`, {
@@ -153,6 +220,55 @@ export default function MLLab() {
       setActionMessage(`Training failed to start: ${error.message}`);
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function prepareArtifacts() {
+    setIsPreparing(true);
+    try {
+      await saveApis();
+      const response = await fetch(`${API_BASE}/api/ml/prepare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(errorBody || `Prepare request failed with status ${response.status}`);
+      }
+      const data = await response.json();
+      setActionMessage(`Prepared artifacts: ${data.tensor_build?.tensor_dir || data.manifest_path}`);
+    } catch (error) {
+      console.error("Failed to prepare artifacts", error);
+      setActionMessage(`Prepare failed: ${error.message}`);
+    } finally {
+      setIsPreparing(false);
+    }
+  }
+
+  async function publishArtifacts() {
+    setIsPublishing(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/ml/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ region: "global", resolution: "2deg" }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(errorBody || `Publish request failed with status ${response.status}`);
+      }
+      const data = await response.json();
+      if (data.status === "blocked") {
+        setActionMessage(`Publish blocked: ${data.message || "not enough real monthly history yet."}`);
+      } else {
+        setActionMessage(`Published verified map for ${data.metadata?.date || "latest valid month"}.`);
+      }
+    } catch (error) {
+      console.error("Failed to publish artifacts", error);
+      setActionMessage(`Publish failed: ${error.message}`);
+    } finally {
+      setIsPublishing(false);
     }
   }
 
@@ -206,12 +322,12 @@ export default function MLLab() {
             status: api.id === "copernicus_marine" ? "testing" : "connected",
             notes:
               api.id === "era5"
-                ? "Training_Data/ERA"
+                ? "~/OceanPulseData/ERA"
                 : api.id === "copernicus_marine"
                   ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
                     "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
                     "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
-                    "min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;" +
+                    "min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80;" +
                     "min_depth=0;max_depth=1;" +
                     "path=Training_Data/Copernicus"
                   : api.notes,
@@ -232,12 +348,12 @@ export default function MLLab() {
           status: api.id === "copernicus_marine" ? "testing" : "connected",
           notes:
             api.id === "era5"
-              ? "Training_Data/ERA"
+              ? "~/OceanPulseData/ERA"
               : api.id === "copernicus_marine"
                 ? "currents_dataset_id=cmems_mod_glo_phy-cur_anfc_0.083deg_P1M-m;" +
                   "salinity_dataset_id=cmems_mod_glo_phy-so_anfc_0.083deg_P1M-m;" +
                   "temperature_dataset_id=cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m;" +
-                  "min_longitude=-160;max_longitude=-120;min_latitude=15;max_latitude=40;" +
+                  "min_longitude=-180;max_longitude=180;min_latitude=-80;max_latitude=80;" +
                   "min_depth=0;max_depth=1;" +
                   "path=Training_Data/Copernicus"
                 : api.notes,
@@ -316,6 +432,12 @@ export default function MLLab() {
             </button>
             <button type="button" className="secondary-button" onClick={saveAndStartHackathonTraining}>
               Save + Start Training
+            </button>
+            <button type="button" className="secondary-button" onClick={prepareArtifacts} disabled={isPreparing}>
+              {isPreparing ? "Preparing…" : "Prepare Artifacts"}
+            </button>
+            <button type="button" className="secondary-button" onClick={publishArtifacts} disabled={isPublishing}>
+              {isPublishing ? "Publishing…" : "Publish Verified Map"}
             </button>
             <button type="button" className="secondary-button" onClick={applyQuickValidationPreset}>
               Quick Validation Mode
@@ -427,6 +549,16 @@ export default function MLLab() {
           <p className="subtle">
             Training source: <strong>{dataSummary.source || "unconfigured_real_pipeline"}</strong>
           </p>
+          {artifacts?.training_manifest ? (
+            <p className="subtle">
+              Manifest: <strong>{artifacts.training_manifest.status}</strong>
+              {artifacts.training_manifest.checkpoint_path
+                ? ` · ${artifacts.training_manifest.checkpoint_path}`
+                : artifacts.training_manifest.resume_checkpoint_path
+                  ? ` · resume ${artifacts.training_manifest.resume_checkpoint_path}`
+                  : ""}
+            </p>
+          ) : null}
           <div className="ml-metrics-grid">
             <article className="ml-metric-card">
               <span className="metric-label">
@@ -636,6 +768,26 @@ export default function MLLab() {
         </div>
 
         <div className="ml-section">
+          <h3>Batch Artifacts</h3>
+          <div className="ml-limit-list">
+            <article className="ml-limit-card">
+              <strong>Prepared tensors</strong>
+              <p className="subtle">
+                {artifacts?.data_manifest?.tensor_build?.tensor_dir || "No prepared tensor manifest yet."}
+              </p>
+            </article>
+            <article className="ml-limit-card">
+              <strong>Published verified map</strong>
+              <p className="subtle">
+                {artifacts?.published_global_2deg?.verified_map
+                  ? `Verified for ${artifacts.published_global_2deg.date}`
+                  : "No published verified map bundle yet."}
+              </p>
+            </article>
+          </div>
+        </div>
+
+        <div className="ml-section">
           <h3>Current Training Path</h3>
           <ol className="ml-steps">
             {usingRealData ? (
@@ -643,16 +795,16 @@ export default function MLLab() {
                 <li>Load SOCAT surface-ocean observations from the configured source URL.</li>
                 <li>Load NOAA GML monthly atmospheric CO2 and join it by year and month.</li>
                 <li>Build monthly aligned tensors from ERA5 plus Copernicus salinity, currents, temperature, and sea level.</li>
-                <li>Train the ConvLSTM on monthly sequences and save a checkpoint for later inference.</li>
-                <li>Keep high-frequency Copernicus routing files ready for live-map inference.</li>
+                <li>Train the ConvLSTM on monthly sequences and autosave resumable checkpoints every 10 epochs.</li>
+                <li>Publish a verified map artifact so the homepage serves a stable product instead of rebuilding live.</li>
               </>
             ) : (
               <>
                 <li>Enable SOCAT and NOAA GML connectors and keep their source URLs valid.</li>
                 <li>Point ERA5 to your local folder or a real remote source.</li>
                 <li>Sync Copernicus monthly physics and routing subsets once dataset IDs and credentials are configured.</li>
-                <li>Start training only after those real inputs are confirmed.</li>
-                <li>No synthetic fallback is used anywhere in this training path.</li>
+                <li>Run prepare to build reusable tensors before large cluster training jobs.</li>
+                <li>Publish verified artifacts after training so the homepage does not depend on live rebuilds.</li>
               </>
             )}
           </ol>

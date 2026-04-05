@@ -27,16 +27,14 @@ export function useForecast() {
           lon: String(selectedPoint.lon),
           months: "12",
         });
-        const [forecast, history] = await Promise.all([
-          fetchJson(`${API_BASE}/api/forecast?${forecastParams.toString()}`, {
-            signal: forecastController.signal,
-            timeoutMs: 7000,
-          }),
-          fetchJson(`${API_BASE}/api/history?${historyParams.toString()}`, {
-            signal: historyController.signal,
-            timeoutMs: 7000,
-          }),
-        ]);
+        const forecast = await fetchJson(`${API_BASE}/api/forecast?${forecastParams.toString()}`, {
+          signal: forecastController.signal,
+          timeoutMs: 30000,
+        });
+        const history = await fetchJson(`${API_BASE}/api/history?${historyParams.toString()}`, {
+          signal: historyController.signal,
+          timeoutMs: 30000,
+        });
         if (!cancelled) {
           setForecast(forecast);
           setHistory(history.history || []);
