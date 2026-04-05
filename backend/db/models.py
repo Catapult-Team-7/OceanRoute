@@ -10,6 +10,9 @@ class FluxPoint(BaseModel):
     sst: float
     salinity: float
     wind_speed: float
+    current_u: float | None = None
+    current_v: float | None = None
+    sea_level: float | None = None
     chl_a: float
     anomaly_score: float = 0.0
     observed_flux: float | None = None
@@ -95,6 +98,8 @@ class FeatureProperties(BaseModel):
     observed_flux: float | None = None
     predicted_flux: float
     sst: float
+    current_u: float | None = None
+    current_v: float | None = None
     anomaly_score: float
     weakening_score: float
     route_priority: float

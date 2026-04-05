@@ -217,11 +217,15 @@ def build_monthly_training_tensors(
         "salinity",
         "current_u",
         "current_v",
+        "current_speed",
         "wind_speed",
         "sea_level",
         "pco2_atm",
         "month_sin",
         "month_cos",
+        "lat_norm",
+        "lon_norm",
+        "ocean_mask",
     ]
     monthly_features: dict[tuple[int, int], np.ndarray] = {}
     monthly_targets: dict[tuple[int, int], np.ndarray] = {}
@@ -249,11 +253,15 @@ def build_monthly_training_tensors(
         feature_grid[1, :, :] = salinity_default / 40.0
         feature_grid[2, :, :] = u_default / 3.0
         feature_grid[3, :, :] = v_default / 3.0
-        feature_grid[4, :, :] = wind_default / 20.0
-        feature_grid[5, :, :] = sea_level_default / 2.0
-        feature_grid[6, :, :] = atm_default / 500.0
-        feature_grid[7, :, :] = np.sin(angle)
-        feature_grid[8, :, :] = np.cos(angle)
+        feature_grid[4, :, :] = np.sqrt((u_default**2) + (v_default**2)) / 4.0
+        feature_grid[5, :, :] = wind_default / 20.0
+        feature_grid[6, :, :] = sea_level_default / 2.0
+        feature_grid[7, :, :] = atm_default / 500.0
+        feature_grid[8, :, :] = np.sin(angle)
+        feature_grid[9, :, :] = np.cos(angle)
+        feature_grid[10, :, :] = lat_values[:, None] / 80.0
+        feature_grid[11, :, :] = lon_values[None, :] / 180.0
+        feature_grid[12, :, :] = 0.0
 
         month_rows = target_grid[(target_grid["year"] == year) & (target_grid["month"] == month)]
         for row in month_rows.itertuples(index=False):
@@ -265,6 +273,7 @@ def build_monthly_training_tensors(
             j = lon_index[lon_key]
             target_values[0, i, j] = float(row.target_flux)
             target_mask[0, i, j] = 1.0
+            feature_grid[12, i, j] = 1.0
             if not np.isnan(getattr(row, "sst_obs", np.nan)):
                 feature_grid[0, i, j] = float(row.sst_obs) / 30.0
             if not np.isnan(getattr(row, "salinity_obs", np.nan)):

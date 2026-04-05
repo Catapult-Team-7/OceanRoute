@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
 import { HACKATHON_API_DEFAULTS } from "../../utils/demoMissionData";
+import { fetchJson } from "../../utils/fetchJson";
 
 const DEFAULT_FORM = {
   epochs: 24,
@@ -36,6 +37,8 @@ const NEXT_DATASETS = [
   "Plastic/debris concentration observations for route supervision rather than hand-authored hotspots",
 ];
 
+const API_LABEL = API_BASE || "current app origin";
+
 export default function MLLab() {
   const [status, setStatus] = useState(null);
   const [artifacts, setArtifacts] = useState(null);
@@ -54,32 +57,34 @@ export default function MLLab() {
   const connectorState = dataSummary.connector_state || {};
   const usingRealData = dataSummary.source === "real_observation_sample";
 
+  async function checkBackendHealth() {
+    try {
+      const data = await fetchJson(`${API_BASE}/health`, { timeoutMs: 3500 });
+      const nextHealth = {
+        reachable: data.status === "ok",
+        checked: true,
+        detail: data.status === "ok" ? `Backend reachable at ${API_LABEL}` : `Unexpected health response from ${API_LABEL}`,
+      };
+      setBackendHealth(nextHealth);
+      return nextHealth;
+    } catch (error) {
+      const nextHealth = {
+        reachable: false,
+        checked: true,
+        detail: `Backend unreachable at ${API_LABEL}. Start or restart the backend and try again.`,
+      };
+      setBackendHealth(nextHealth);
+      return nextHealth;
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
     async function loadHealth() {
-      try {
-        const response = await fetch(`${API_BASE}/health`);
-        if (!response.ok) {
-          throw new Error(`Health check returned ${response.status}`);
-        }
-        const data = await response.json();
-        if (!cancelled) {
-          setBackendHealth({
-            reachable: data.status === "ok",
-            checked: true,
-            detail: data.status === "ok" ? `Backend reachable at ${API_BASE}` : `Unexpected health response from ${API_BASE}`,
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setBackendHealth({
-            reachable: false,
-            checked: true,
-            detail: `Backend unreachable at ${API_BASE}. Start or restart the backend and try again.`,
-          });
-        }
-      }
+      const health = await checkBackendHealth();
+      if (cancelled) return;
+      setBackendHealth(health);
     }
 
     loadHealth();
@@ -157,8 +162,9 @@ export default function MLLab() {
   async function startTraining() {
     setIsSubmitting(true);
     try {
-      if (!backendHealth.reachable) {
-        throw new Error(`Backend unreachable at ${API_BASE}. Check that /health responds before training.`);
+      const liveHealth = await checkBackendHealth();
+      if (!liveHealth.reachable) {
+        throw new Error(`Backend unreachable at ${API_LABEL}. Check that /health responds before training.`);
       }
       await saveApis();
       const response = await fetch(`${API_BASE}/api/ml/train`, {

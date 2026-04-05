@@ -240,7 +240,7 @@ def _build_feature_grids(
     monthly_atm: dict[tuple[int, int], float] = {}
 
     for year, month in months:
-        feature_grid = np.zeros((9, len(lat_values), len(lon_values)), dtype=np.float32)
+        feature_grid = np.zeros((13, len(lat_values), len(lon_values)), dtype=np.float32)
         scalar_subset = copernicus_monthly[(copernicus_monthly["year"] == year) & (copernicus_monthly["month"] == month)]
         era_subset = era_monthly[(era_monthly["year"] == year) & (era_monthly["month"] == month)]
 
@@ -257,11 +257,15 @@ def _build_feature_grids(
         feature_grid[1, :, :] = salinity_default / 40.0
         feature_grid[2, :, :] = u_default / 3.0
         feature_grid[3, :, :] = v_default / 3.0
-        feature_grid[4, :, :] = wind_default / 20.0
-        feature_grid[5, :, :] = sea_level_default / 2.0
-        feature_grid[6, :, :] = atm_default / 500.0
-        feature_grid[7, :, :] = np.sin(angle)
-        feature_grid[8, :, :] = np.cos(angle)
+        feature_grid[4, :, :] = np.sqrt((u_default**2) + (v_default**2)) / 4.0
+        feature_grid[5, :, :] = wind_default / 20.0
+        feature_grid[6, :, :] = sea_level_default / 2.0
+        feature_grid[7, :, :] = atm_default / 500.0
+        feature_grid[8, :, :] = np.sin(angle)
+        feature_grid[9, :, :] = np.cos(angle)
+        feature_grid[10, :, :] = lat_values[:, None] / 80.0
+        feature_grid[11, :, :] = lon_values[None, :] / 180.0
+        feature_grid[12, :, :] = 0.0
 
         month_rows = scalar_subset
         for row in month_rows.itertuples(index=False):
@@ -279,8 +283,10 @@ def _build_feature_grids(
                 feature_grid[2, i, j] = float(row.copernicus_u) / 3.0
             if hasattr(row, "copernicus_v") and not np.isnan(getattr(row, "copernicus_v", np.nan)):
                 feature_grid[3, i, j] = float(row.copernicus_v) / 3.0
+            feature_grid[4, i, j] = float(np.sqrt((feature_grid[2, i, j] * 3.0) ** 2 + (feature_grid[3, i, j] * 3.0) ** 2) / 4.0)
             if hasattr(row, "copernicus_zos") and not np.isnan(getattr(row, "copernicus_zos", np.nan)):
-                feature_grid[5, i, j] = float(row.copernicus_zos) / 2.0
+                feature_grid[6, i, j] = float(row.copernicus_zos) / 2.0
+            feature_grid[12, i, j] = 1.0
 
         monthly_features[(year, month)] = feature_grid
         monthly_atm[(year, month)] = atm_default
@@ -390,16 +396,20 @@ def build_provisional_real_grid_bundle(
     atm_default = _latest_scalar_value(atmospheric, target_month[0], target_month[1], "pco2_atm", default=0.0)
     angle = 2 * np.pi * target_month[1] / 12.0
 
-    feature_grid = np.zeros((9, len(lat_values), len(lon_values)), dtype=np.float32)
+    feature_grid = np.zeros((13, len(lat_values), len(lon_values)), dtype=np.float32)
     feature_grid[0, :, :] = thetao_default / 30.0
     feature_grid[1, :, :] = salinity_default / 40.0
     feature_grid[2, :, :] = u_default / 3.0
     feature_grid[3, :, :] = v_default / 3.0
-    feature_grid[4, :, :] = wind_default / 20.0
-    feature_grid[5, :, :] = sea_level_default / 2.0
-    feature_grid[6, :, :] = atm_default / 500.0
-    feature_grid[7, :, :] = np.sin(angle)
-    feature_grid[8, :, :] = np.cos(angle)
+    feature_grid[4, :, :] = np.sqrt((u_default**2) + (v_default**2)) / 4.0
+    feature_grid[5, :, :] = wind_default / 20.0
+    feature_grid[6, :, :] = sea_level_default / 2.0
+    feature_grid[7, :, :] = atm_default / 500.0
+    feature_grid[8, :, :] = np.sin(angle)
+    feature_grid[9, :, :] = np.cos(angle)
+    feature_grid[10, :, :] = lat_values[:, None] / 80.0
+    feature_grid[11, :, :] = lon_values[None, :] / 180.0
+    feature_grid[12, :, :] = 0.0
 
     for row in target_rows.itertuples(index=False):
         lat_key = round(float(row.lat_bin), 6)
@@ -416,8 +426,10 @@ def build_provisional_real_grid_bundle(
             feature_grid[2, i, j] = float(row.copernicus_u) / 3.0
         if hasattr(row, "copernicus_v") and not np.isnan(getattr(row, "copernicus_v", np.nan)):
             feature_grid[3, i, j] = float(row.copernicus_v) / 3.0
+        feature_grid[4, i, j] = float(np.sqrt((feature_grid[2, i, j] * 3.0) ** 2 + (feature_grid[3, i, j] * 3.0) ** 2) / 4.0)
         if hasattr(row, "copernicus_zos") and not np.isnan(getattr(row, "copernicus_zos", np.nan)):
-            feature_grid[5, i, j] = float(row.copernicus_zos) / 2.0
+            feature_grid[6, i, j] = float(row.copernicus_zos) / 2.0
+        feature_grid[12, i, j] = 1.0
 
     with torch.no_grad():
         x_tensor = torch.tensor(feature_grid[None, ...], dtype=torch.float32)
@@ -474,7 +486,10 @@ def build_provisional_real_grid_bundle(
                     co2_flux=round(predicted_flux, 4),
                     sst=round(float(feature_grid[0, i, j] * 30.0), 2),
                     salinity=round(float(feature_grid[1, i, j] * 40.0), 2),
-                    wind_speed=round(float(feature_grid[4, i, j] * 20.0), 2),
+                    wind_speed=round(float(feature_grid[5, i, j] * 20.0), 2),
+                    current_u=round(current_u, 4),
+                    current_v=round(current_v, 4),
+                    sea_level=round(float(feature_grid[6, i, j] * 2.0), 4),
                     chl_a=0.0,
                     anomaly_score=round(anomaly_score, 4),
                     observed_flux=round(predicted_flux, 4),
@@ -648,7 +663,10 @@ def build_real_grid_bundle(
                     co2_flux=round(predicted_flux, 4),
                     sst=round(float(target_features[0, i, j] * 30.0), 2),
                     salinity=round(float(target_features[1, i, j] * 40.0), 2),
-                    wind_speed=round(float(target_features[4, i, j] * 20.0), 2),
+                    wind_speed=round(float(target_features[5, i, j] * 20.0), 2),
+                    current_u=round(current_u, 4),
+                    current_v=round(current_v, 4),
+                    sea_level=round(float(target_features[6, i, j] * 2.0), 4),
                     chl_a=0.0,
                     anomaly_score=round(anomaly_score, 4),
                     observed_flux=round(observed_value, 4),
@@ -750,8 +768,8 @@ def build_real_point_bundle(
                 "flux": float(predicted_grid[lat_idx, lon_idx]),
                 "current_u": float(feature_grid[2, lat_idx, lon_idx] * 3.0),
                 "current_v": float(feature_grid[3, lat_idx, lon_idx] * 3.0),
-                "sea_level": float(feature_grid[5, lat_idx, lon_idx] * 2.0),
-                "wind_speed": float(feature_grid[4, lat_idx, lon_idx] * 20.0),
+                "sea_level": float(feature_grid[6, lat_idx, lon_idx] * 2.0),
+                "wind_speed": float(feature_grid[5, lat_idx, lon_idx] * 20.0),
             }
         )
 

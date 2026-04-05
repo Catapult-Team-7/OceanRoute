@@ -6,11 +6,50 @@ import DeckGL from "@deck.gl/react";
 import { useHeatmapData } from "../../hooks/useHeatmapData";
 import { useTrashData } from "../../hooks/useTrashData";
 import { useOceanStore } from "../../store/oceanStore";
-import { fluxToColor } from "../../utils/colorScale";
 import { buildDisplayTrashTargets, buildRecoveryTargets, buildTopMissionTargets } from "../../utils/missionInsights";
 
 const MapLibreSurface = lazy(() => import("./MapLibreSurface"));
 const INITIAL_VIEW_STATE = { longitude: 0, latitude: 12, zoom: 1.15, pitch: 0, bearing: 0 };
+
+function normalizeLon(lon) {
+  return ((((lon + 180) % 360) + 360) % 360) - 180;
+}
+
+function distanceDeg(pointA, pointB) {
+  const lonDelta = normalizeLon(pointA.lon - pointB.lon);
+  return Math.hypot(pointA.lat - pointB.lat, lonDelta);
+}
+
+function selectSpacedFeatures(points, minDistanceDeg, limit, predicate = null) {
+  const selected = [];
+  for (const point of points) {
+    if (predicate && !predicate(point)) continue;
+    const candidate = {
+      point,
+      lat: point.geometry.coordinates[1],
+      lon: point.geometry.coordinates[0],
+    };
+    if (selected.every((item) => distanceDeg(candidate, item) >= minDistanceDeg)) {
+      selected.push(candidate);
+    }
+    if (selected.length >= limit) {
+      break;
+    }
+  }
+  return selected.map((item) => item.point);
+}
+
+function hotspotStrength(point) {
+  const predicted = point.properties?.predicted_flux || 0;
+  const observed = point.properties?.observed_flux ?? predicted;
+  const weakening = point.properties?.weakening_score || 0;
+  const anomaly = point.properties?.anomaly_score || 0;
+  return Math.abs(predicted - observed) * 1.6 + Math.abs(predicted) * 0.7 + weakening * 3.0 + anomaly * 1.5;
+}
+
+function routeStrength(target) {
+  return (target.routePriority || 0) * 1.3 + (target.intensity || 0) * 0.7 + (target.weakening || 0) * 0.5;
+}
 
 export default function OceanMap() {
   useHeatmapData();
@@ -26,6 +65,7 @@ export default function OceanMap() {
   const [showBrief, setShowBrief] = useState(true);
   const verifiedMap = Boolean(heatmapData?.metadata?.verified_map);
   const sourceSummary = heatmapData?.metadata?.source_summary || "";
+  const gridResolution = selectedRegion === "global" ? "2deg" : "1deg";
 
   const points = heatmapData?.features || [];
   const recoveryTargets = useMemo(
@@ -36,15 +76,43 @@ export default function OceanMap() {
     () => buildDisplayTrashTargets(trashData?.hotspots || [], recoveryTargets, viewState.zoom),
     [trashData?.hotspots, recoveryTargets, viewState.zoom]
   );
+  const visibleTrashTargets = useMemo(
+    () =>
+      [...trashTargets]
+        .sort((a, b) => routeStrength(b) - routeStrength(a))
+        .slice(0, selectedRegion === "global" ? 10 : 16),
+    [selectedRegion, trashTargets]
+  );
   const prioritySummary = useMemo(
     () => buildTopMissionTargets(points, anomalies, viewState.zoom, verifiedMap),
     [anomalies, points, verifiedMap, viewState.zoom]
   );
 
+  const routedTrashTargets = useMemo(
+    () => {
+      const seenPorts = new Set();
+      const selected = [];
+      for (const item of [...visibleTrashTargets]
+        .filter((target) => target.routeTarget)
+        .sort((a, b) => routeStrength(b) - routeStrength(a))) {
+        const portKey = `${item.routeTarget.name}:${item.routeTarget.lat}:${item.routeTarget.lon}`;
+        if (seenPorts.has(portKey)) {
+          continue;
+        }
+        seenPorts.add(portKey);
+        selected.push(item);
+        if (selected.length >= (selectedRegion === "global" ? 4 : 7)) {
+          break;
+        }
+      }
+      return selected;
+    },
+    [selectedRegion, visibleTrashTargets]
+  );
+
   const routeSegments = useMemo(
     () =>
-      trashTargets
-        .filter((item) => item.routeTarget)
+      routedTrashTargets
         .map((item) => ({
         id: `${item.id}-route`,
         path: [
@@ -57,45 +125,49 @@ export default function OceanMap() {
         label: `${item.label} to ${item.routeTarget.name}`,
         weakening: item.weakening || 0,
       })),
-    [trashTargets]
+    [routedTrashTargets]
   );
 
   const hotspotNodes = useMemo(
-    () =>
-      [...points]
+    () => {
+      const ranked = [...points]
         .filter((point) => point?.properties)
-        .sort(
-          (a, b) =>
-            Math.abs((b.properties.predicted_flux || 0) - (b.properties.observed_flux || 0)) +
-              (b.properties.weakening_score || 0) -
-            (Math.abs((a.properties.predicted_flux || 0) - (a.properties.observed_flux || 0)) +
-              (a.properties.weakening_score || 0))
-        )
-        .slice(0, 320),
-    [points]
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 68)
+        .sort((a, b) => hotspotStrength(b) - hotspotStrength(a));
+      return selectSpacedFeatures(
+        ranked,
+        selectedRegion === "global" ? 12 : 6,
+        selectedRegion === "global" ? 32 : 42,
+        (point) =>
+          hotspotStrength(point) >= (selectedRegion === "global" ? 1.1 : 0.75)
+      );
+    },
+    [points, selectedRegion]
   );
 
   const weakeningZones = useMemo(
-    () =>
-      points
-        .filter((point, index) => point.properties.weakening_score > 0.28 && index % 3 === 0)
-        .slice(0, 180),
-    [points]
+    () => {
+      const ranked = [...points]
+        .filter((point) => Math.abs(point.geometry.coordinates[1]) <= 68)
+        .filter((point) => (point.properties.weakening_score || 0) > 0.2)
+        .sort((a, b) => (b.properties.weakening_score || 0) - (a.properties.weakening_score || 0));
+      return selectSpacedFeatures(
+        ranked,
+        selectedRegion === "global" ? 14 : 7,
+        selectedRegion === "global" ? 22 : 28
+      );
+    },
+    [points, selectedRegion]
   );
-
-  const displayPoints = useMemo(() => {
-    const stride = selectedRegion === "global" && viewState.zoom < 1.8 ? 2 : 1;
-    return points.filter((_, index) => index % stride === 0);
-  }, [points, selectedRegion, viewState.zoom]);
 
   const routeLabels = useMemo(
     () =>
-      trashTargets.slice(0, viewState.zoom > 2.2 ? 10 : 5).map((item) => ({
+      routedTrashTargets.slice(0, viewState.zoom > 2.2 ? 8 : 4).map((item) => ({
         id: `${item.id}-label`,
         position: [item.lon, item.lat],
         label: item.label,
       })),
-    [trashTargets, viewState.zoom]
+    [routedTrashTargets, viewState.zoom]
   );
 
   const tooltipText = ({ object }) => {
@@ -129,19 +201,6 @@ export default function OceanMap() {
     () => {
       const activeLayers = [];
       activeLayers.push(
-      new ScatterplotLayer({
-        id: "flux-cells",
-        data: displayPoints,
-        getPosition: (d) => d.geometry.coordinates,
-        radiusUnits: "meters",
-        getRadius: (d) => 65000 + Math.min(Math.abs(d.properties.predicted_flux), 4) * 18000,
-        radiusMinPixels: selectedRegion === "global" ? 2.5 : 3.5,
-        getFillColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 156 : 110],
-        getLineColor: (d) => [...fluxToColor(d.properties.predicted_flux), verifiedMap ? 225 : 180],
-        lineWidthMinPixels: viewState.zoom > 2 ? 1.2 : 0.8,
-        stroked: true,
-        pickable: true,
-      }),
       new PathLayer({
         id: "recovery-routes",
         data: routeSegments,
@@ -192,11 +251,11 @@ export default function OceanMap() {
         stroked: true,
         pickable: true,
       }));
-      if (trashTargets.length) {
+      if (visibleTrashTargets.length) {
         activeLayers.push(
       new ScatterplotLayer({
         id: "trash-targets",
-        data: trashTargets,
+        data: visibleTrashTargets,
         getPosition: (d) => [d.lon, d.lat],
         getRadius: (d) => 60000 + (d.clusterSize || 1) * 15000 + (d.routePriority || d.intensity || 0) * 40000,
         radiusMinPixels: selectedRegion === "global" ? 12 : 14,
@@ -239,7 +298,7 @@ export default function OceanMap() {
       }
       return activeLayers;
     },
-    [anomalies, displayPoints, hotspotNodes, routeLabels, routeSegments, trashTargets, verifiedMap, viewState.zoom, weakeningZones]
+    [anomalies, hotspotNodes, routeLabels, routeSegments, selectedRegion, verifiedMap, viewState.zoom, visibleTrashTargets, weakeningZones]
   );
 
   return (
@@ -252,7 +311,7 @@ export default function OceanMap() {
             {verifiedMap && prioritySummary.degradationTarget ? (
               <small className="map-brief-subcopy">
                 Top weakening cell: {prioritySummary.degradationTarget.properties.weakening_score.toFixed(2)} · Top route
-                target: {trashTargets[0]?.routeTarget?.name || "awaiting routing target"}
+                target: {visibleTrashTargets[0]?.routeTarget?.name || "awaiting routing target"}
               </small>
             ) : (
               <small className="map-brief-subcopy">
@@ -279,9 +338,9 @@ export default function OceanMap() {
         onViewStateChange={({ viewState: nextViewState }) => setViewState(nextViewState)}
         onClick={({ coordinate, object }) => {
           if (typeof object?.lat === "number" && typeof object?.lon === "number") {
-            setSelectedPoint({ lat: object.lat, lon: object.lon });
+            setSelectedPoint({ lat: object.lat, lon: normalizeLon(object.lon) });
           } else if (coordinate) {
-            setSelectedPoint({ lat: coordinate[1], lon: coordinate[0] });
+            setSelectedPoint({ lat: coordinate[1], lon: normalizeLon(coordinate[0]) });
           }
         }}
         getTooltip={tooltipText}
@@ -289,10 +348,12 @@ export default function OceanMap() {
         <Suspense fallback={null}>
           <MapLibreSurface
             basemapStyle={basemapStyle}
+            heatmapFeatures={points}
             co2Hotspots={hotspotNodes}
-            trashTargets={trashTargets}
+            trashTargets={visibleTrashTargets}
             routeSegments={routeSegments}
             anomalies={anomalies}
+            resolution={gridResolution}
           />
         </Suspense>
       </DeckGL>
@@ -300,7 +361,7 @@ export default function OceanMap() {
         <div className="map-empty-state">
           <strong>Verified CO2 layers are still catching up.</strong>
           <span>
-            {trashTargets.length
+            {visibleTrashTargets.length
               ? "Trash and routing overlays are shown from the model-first transport prediction while the CO2 surface is being verified. "
               : ""}
             {sourceSummary || "The current CO2 layer is provisional. It uses only real data paths and stays limited until the checkpoint-backed grid is ready."}

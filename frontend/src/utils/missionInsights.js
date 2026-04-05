@@ -1,18 +1,5 @@
-const MAJOR_PORTS = [
-  { name: "Los Angeles", lat: 33.7405, lon: -118.273 },
-  { name: "San Francisco", lat: 37.7749, lon: -122.4194 },
-  { name: "Vancouver", lat: 49.2827, lon: -123.1207 },
-  { name: "Honolulu", lat: 21.3069, lon: -157.8583 },
-  { name: "Yokohama", lat: 35.4437, lon: 139.638 },
-  { name: "Singapore", lat: 1.2903, lon: 103.8519 },
-  { name: "Cape Town", lat: -33.9249, lon: 18.4241 },
-  { name: "Santos", lat: -23.9608, lon: -46.3336 },
-  { name: "Rotterdam", lat: 51.9244, lon: 4.4777 },
-  { name: "Durban", lat: -29.8587, lon: 31.0218 },
-];
-
 function normalizeLon(lon) {
-  return ((lon + 180) % 360) - 180;
+  return ((((lon + 180) % 360) + 360) % 360) - 180;
 }
 
 function distanceScore(latA, lonA, latB, lonB) {
@@ -20,14 +7,11 @@ function distanceScore(latA, lonA, latB, lonB) {
   return Math.hypot((latA - latB) / 8, lonDelta / 10);
 }
 
-export function nearestPort(lat, lon) {
-  return MAJOR_PORTS.reduce((best, port) => {
-    const score = distanceScore(lat, lon, port.lat, port.lon);
-    if (!best || score < best.score) {
-      return { ...port, score };
-    }
-    return best;
-  }, null);
+function clusterDistanceForZoom(zoom) {
+  if (zoom < 1.4) return 12;
+  if (zoom < 2.1) return 8;
+  if (zoom < 3) return 5;
+  return 3;
 }
 
 function clusterWindowForZoom(zoom) {
@@ -99,7 +83,6 @@ export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
     .map((group, index) => {
       const lat = group.latSum / Math.max(group.weightSum, 0.001);
       const lon = normalizeLon(group.lonSum / Math.max(group.weightSum, 0.001));
-      const port = nearestPort(lat, lon);
       const clusterSize = group.points.length;
       return {
         id: `recovery-target-${index}`,
@@ -107,7 +90,7 @@ export function buildRecoveryTargets(points, zoom = 1.5, verifiedMap = false) {
         lon,
         clusterSize,
         label: clusterSize > 1 ? `${verifiedMap ? "Recovery" : "Provisional recovery"} cluster (${clusterSize})` : verifiedMap ? "Recovery target" : "Provisional recovery target",
-        routeTarget: port,
+        routeTarget: null,
         weakening: group.maxWeakening,
         routePriority: group.maxRoutePriority,
         anomalyScore: group.maxAnomalyScore,
@@ -123,6 +106,85 @@ export function buildDisplayTrashTargets(observedHotspots = [], fallbackTargets 
   const sourceHotspots = observedHotspots.length ? observedHotspots : fallbackTargets;
   if (!sourceHotspots.length) {
     return [];
+  }
+
+  if (observedHotspots.length) {
+    const clusterDistance = clusterDistanceForZoom(zoom);
+    const clusters = [];
+    for (const item of observedHotspots
+      .filter((item) => Math.abs(item.lat) <= 62)
+      .sort(
+        (a, b) =>
+          (b.metadata?.source_count || 1) * (b.intensity || 0) -
+          (a.metadata?.source_count || 1) * (a.intensity || 0)
+      )) {
+      const weight = Math.max(0.15, (item.metadata?.source_count || 1) * (item.intensity || 1));
+      const existing = clusters.find(
+        (cluster) => distanceScore(item.lat, item.lon, cluster.lat, cluster.lon) <= clusterDistance
+      );
+      if (existing) {
+        existing.weight += weight;
+        existing.lat = (existing.lat * existing.weightBefore + item.lat * weight) / (existing.weightBefore + weight);
+        existing.lon = normalizeLon((existing.lon * existing.weightBefore + item.lon * weight) / (existing.weightBefore + weight));
+        existing.weightBefore += weight;
+        existing.clusterSize += item.metadata?.source_count || 1;
+        existing.intensity = Math.max(existing.intensity, item.intensity || 0);
+        existing.routePriority = Math.max(existing.routePriority, item.metadata?.route_priority || item.intensity || 0);
+        existing.weakening = Math.max(existing.weakening, item.metadata?.weakening_score || item.weakening || 0);
+        existing.anomalyScore = Math.max(existing.anomalyScore, item.metadata?.anomaly_score || item.anomalyScore || 0);
+        if (!existing.routeTarget && item.nearest_port) {
+          existing.routeTarget = {
+            name: item.nearest_port.name,
+            lat: item.nearest_port.lat,
+            lon: item.nearest_port.lon,
+            country: item.nearest_port.country,
+          };
+        }
+      } else {
+        clusters.push({
+          id: item.id || `trash-hotspot-${clusters.length}`,
+          label: item.label || "Predicted trash convergence zone",
+          lat: item.lat,
+          lon: normalizeLon(item.lon),
+          clusterSize: item.metadata?.source_count || 1,
+          intensity: item.intensity || 0,
+          routePriority: item.metadata?.route_priority || item.intensity || 0,
+          weakening: item.metadata?.weakening_score || item.weakening || 0,
+          anomalyScore: item.metadata?.anomaly_score || item.anomalyScore || 0,
+          routeTarget: item.nearest_port
+            ? {
+                name: item.nearest_port.name,
+                lat: item.nearest_port.lat,
+                lon: item.nearest_port.lon,
+                country: item.nearest_port.country,
+              }
+            : item.routeTarget || null,
+          observed: Boolean(item.observed),
+          source: item.source,
+          metadata: item.metadata || {},
+          weight,
+          weightBefore: weight,
+        });
+      }
+    }
+
+    return clusters
+      .map((cluster, index) => ({
+        id: cluster.id || `trash-hotspot-${index}`,
+        label: cluster.clusterSize > 1 ? `Trash cluster (${cluster.clusterSize})` : cluster.label,
+        lat: cluster.lat,
+        lon: normalizeLon(cluster.lon),
+        clusterSize: cluster.clusterSize,
+        intensity: cluster.intensity,
+        routePriority: cluster.routePriority,
+        weakening: cluster.weakening,
+        anomalyScore: cluster.anomalyScore,
+        routeTarget: cluster.routeTarget,
+        observed: cluster.observed,
+        source: cluster.source,
+        metadata: cluster.metadata,
+      }))
+      .sort((a, b) => (b.routePriority || b.intensity || 0) - (a.routePriority || a.intensity || 0));
   }
 
   const clusterStep = clusterWindowForZoom(zoom);

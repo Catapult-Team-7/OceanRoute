@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+import time
 
 from ingest.real_training_data import RealDataLoadError
 from pipeline.artifacts import load_best_published_map_bundle
@@ -30,6 +32,17 @@ class DemoOceanRepository:
             "source_summary": "No verified CO2 ocean layers are available until the real gridded pipeline succeeds.",
         }
         self.last_real_anomalies: list[AnomalyRecord] = []
+        self._grid_cache: dict[tuple, tuple[float, list[FluxPoint], dict, list[AnomalyRecord]]] = {}
+        self._grid_cache_ttl_seconds = 20.0
+
+    def _checkpoint_cache_token(self) -> tuple[str | None, int | None]:
+        checkpoint_path = self.trainer.state.model_summary.get("checkpoint_path")
+        if not checkpoint_path:
+            return None, None
+        path = Path(checkpoint_path)
+        if not path.exists():
+            return checkpoint_path, None
+        return str(path), path.stat().st_mtime_ns
 
     def _monthly_timestamp(self, date_str: str | None) -> datetime:
         if not date_str:
@@ -46,13 +59,24 @@ class DemoOceanRepository:
         return min_lat <= lat <= max_lat and lon_ok
 
     def get_flux_grid(self, date: str | None, resolution: str, region: str) -> list[FluxPoint]:
+        cache_key = (date or "", resolution, region, *self._checkpoint_cache_token())
+        cached = self._grid_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and now_ts - cached[0] <= self._grid_cache_ttl_seconds:
+            _, rows, metadata, anomalies = cached
+            self.last_grid_metadata = metadata
+            self.last_real_anomalies = anomalies
+            return rows
+
         published_bundle = load_best_published_map_bundle(region=region, resolution=resolution, date=date)
         if published_bundle:
             self.last_grid_metadata = published_bundle.get("metadata", {})
             self.last_real_anomalies = [
                 AnomalyRecord.model_validate(item) for item in published_bundle.get("anomalies", [])
             ]
-            return [FluxPoint.model_validate(item) for item in published_bundle.get("rows", [])]
+            rows = [FluxPoint.model_validate(item) for item in published_bundle.get("rows", [])]
+            self._grid_cache[cache_key] = (now_ts, rows, dict(self.last_grid_metadata), list(self.last_real_anomalies))
+            return rows
 
         noaa_config = self.trainer._config_by_id("noaa_gml_co2") or {}
         socat_config = self.trainer._config_by_id("socat") or {}
@@ -74,6 +98,7 @@ class DemoOceanRepository:
             )
             self.last_grid_metadata = real_bundle.metadata
             self.last_real_anomalies = real_bundle.anomalies
+            self._grid_cache[cache_key] = (now_ts, list(real_bundle.rows), dict(real_bundle.metadata), list(real_bundle.anomalies))
             return real_bundle.rows
         except RealDataLoadError as exc:
             try:
@@ -94,6 +119,12 @@ class DemoOceanRepository:
                 ).strip()
                 self.last_grid_metadata = provisional_bundle.metadata
                 self.last_real_anomalies = provisional_bundle.anomalies
+                self._grid_cache[cache_key] = (
+                    now_ts,
+                    list(provisional_bundle.rows),
+                    dict(provisional_bundle.metadata),
+                    list(provisional_bundle.anomalies),
+                )
                 return provisional_bundle.rows
             except RealDataLoadError:
                 self.last_grid_metadata = {

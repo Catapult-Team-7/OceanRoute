@@ -274,17 +274,19 @@ class MLTrainerService:
                 "mode": "real_monthly_convlstm",
                 "target": "co2_flux",
                 "features": [
-                    "lat_norm",
-                    "lon_norm",
                     "thetao",
                     "salinity",
-                    "wind_speed",
                     "current_u",
                     "current_v",
+                    "current_speed",
+                    "wind_speed",
                     "sea_level",
                     "pco2_atm",
                     "month_sin",
                     "month_cos",
+                    "lat_norm",
+                    "lon_norm",
+                    "ocean_mask",
                 ],
             },
             data_summary={
@@ -463,7 +465,12 @@ class MLTrainerService:
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         feature_names = checkpoint.get("feature_names", self.state.model_summary.get("features", []))
         model = OceanPulseLSTM(in_channels=len(feature_names))
-        model.load_state_dict(checkpoint["model_state_dict"])
+        try:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        except RuntimeError as exc:
+            raise RealDataLoadError(
+                "The saved checkpoint is incompatible with the current model architecture. Retrain the model to refresh the checkpoint."
+            ) from exc
         model.eval()
         self._spatial_model = model
         self._spatial_model_meta = checkpoint

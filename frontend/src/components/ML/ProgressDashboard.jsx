@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 
 import InfoHint from "../common/InfoHint";
 import { API_BASE } from "../../utils/constants";
+import { fetchJson } from "../../utils/fetchJson";
+
+const API_LABEL = API_BASE || "current app origin";
 
 export default function ProgressDashboard() {
   const [status, setStatus] = useState(null);
@@ -13,19 +16,18 @@ export default function ProgressDashboard() {
 
     async function loadHealth() {
       try {
-        const response = await fetch(`${API_BASE}/health`);
-        const data = await response.json();
+        const data = await fetchJson(`${API_BASE}/health`, { timeoutMs: 3500 });
         if (!cancelled) {
           setBackendHealth({
             reachable: data.status === "ok",
-            detail: data.status === "ok" ? `Backend reachable at ${API_BASE}` : "Unexpected backend health response.",
+            detail: data.status === "ok" ? `Backend reachable at ${API_LABEL}` : "Unexpected backend health response.",
           });
         }
       } catch (error) {
         if (!cancelled) {
           setBackendHealth({
             reachable: false,
-            detail: `Backend unreachable at ${API_BASE}.`,
+            detail: `Backend unreachable at ${API_LABEL}.`,
           });
         }
       }
@@ -33,8 +35,7 @@ export default function ProgressDashboard() {
 
     async function loadStatus() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/status`);
-        const data = await response.json();
+        const data = await fetchJson(`${API_BASE}/api/ml/status`, { timeoutMs: 5000 });
         if (!cancelled) setStatus(data);
       } catch (error) {
         if (!cancelled) setStatus(null);
@@ -43,8 +44,7 @@ export default function ProgressDashboard() {
 
     async function loadArtifacts() {
       try {
-        const response = await fetch(`${API_BASE}/api/ml/artifacts`);
-        const data = await response.json();
+        const data = await fetchJson(`${API_BASE}/api/ml/artifacts`, { timeoutMs: 5000 });
         if (!cancelled) setArtifacts(data);
       } catch (error) {
         if (!cancelled) setArtifacts(null);

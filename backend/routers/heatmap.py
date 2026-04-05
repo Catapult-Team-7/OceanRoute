@@ -38,6 +38,8 @@ async def heatmap(
                     observed_flux=ml_scores["observed_flux"],
                     predicted_flux=ml_scores["predicted_flux"],
                     sst=row.sst,
+                    current_u=getattr(row, "current_u", None),
+                    current_v=getattr(row, "current_v", None),
                     anomaly_score=row.anomaly_score,
                     weakening_score=ml_scores["weakening_score"],
                     route_priority=ml_scores["route_priority"],
